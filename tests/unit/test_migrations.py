@@ -9,17 +9,12 @@ from types import ModuleType
 from sqlalchemy import create_engine, inspect
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "alembic"
-    / "versions"
-    / "0001_initial_debate_table.py"
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0001_initial_debate_table.py"
 )
 
 
 def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "paper_trail_migration_0001", MIGRATION_PATH
-    )
+    spec = importlib.util.spec_from_file_location("paper_trail_migration_0001", MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

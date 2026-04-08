@@ -4,6 +4,39 @@ services:
     runtime: docker
     plan: free
     healthCheckPath: /health
+    preDeployCommand: alembic upgrade head
     envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_BASE_URL
+        sync: false
+      - key: OPENROUTER_MODEL_PRIMARY
+        sync: false
+      - key: OPENROUTER_MODEL_FAST
+        sync: false
+      - key: OPENROUTER_MODEL_FALLBACK
+        sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: VOYAGE_MODEL
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: CORS_ORIGINS
+        value: "https://paper-trail-frontend.vercel.app,http://localhost:3000"
+      - key: DEMO_MODE
+        value: "true"
       - key: PORT
         value: "8000"

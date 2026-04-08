@@ -30,8 +30,19 @@ class Settings(BaseSettings):
     # Tavily
     tavily_api_key: str = "test-tavily"
 
+    # Langfuse
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = ""
+
     # Public base URL
     public_base_url: str = "http://localhost:8000"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        if not self.cors_origins:
+            return []
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 settings = Settings()
