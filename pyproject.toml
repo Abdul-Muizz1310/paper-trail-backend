@@ -92,3 +92,8 @@ markers = [
     "slow: slow end-to-end tests (CI-only)",
     "integration: requires Testcontainers / real Postgres",
 ]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+]
