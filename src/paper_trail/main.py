@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from paper_trail.api.routers.debates import router as debates_router
+from paper_trail.api.routers.platform import router as platform_router
 from paper_trail.core.config import settings
 from paper_trail.core.platform import install_platform_middleware
 
@@ -21,3 +22,4 @@ app.add_middleware(
 )
 
 app.include_router(debates_router)
+app.include_router(platform_router)

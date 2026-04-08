@@ -48,9 +48,7 @@ class FakePlatformService:
     async def get(self, debate_id: UUID) -> Any:
         return self.store.get(debate_id)
 
-    async def list(
-        self, cursor: str | None, limit: int = 50
-    ) -> tuple[list[Any], str | None]:
+    async def list(self, cursor: str | None, limit: int = 50) -> tuple[list[Any], str | None]:
         return list(self.store.values()), None
 
 

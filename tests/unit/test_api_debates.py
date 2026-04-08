@@ -59,9 +59,7 @@ class FakeDebateService:
             d.status = self._status_sequence.pop(0)
         return d
 
-    async def list(
-        self, cursor: str | None, limit: int = 50
-    ) -> tuple[list[Any], str | None]:
+    async def list(self, cursor: str | None, limit: int = 50) -> tuple[list[Any], str | None]:
         items = list(self.store.values())[:limit]
         return items, "next-cursor-abc"
 
@@ -161,9 +159,7 @@ async def test_transcript_markdown_missing_404(client_with_fake) -> None:
     assert r.status_code == 404
 
 
-async def test_stream_emits_state_and_done(
-    client_with_fake, monkeypatch
-) -> None:
+async def test_stream_emits_state_and_done(client_with_fake, monkeypatch) -> None:
     monkeypatch.setattr(debates_router_mod, "STREAM_POLL_SECONDS", 0.01)
     monkeypatch.setattr(debates_router_mod, "STREAM_MAX_SECONDS", 5.0)
     did = await client_with_fake.create("hi", 3)
@@ -173,8 +169,7 @@ async def test_stream_emits_state_and_done(
 
     seen_state = False
     seen_done = False
-    async with await _make_client() as c:
-        async with c.stream("GET", f"/debates/{did}/stream") as r:
+    async with await _make_client() as c, c.stream("GET", f"/debates/{did}/stream") as r:
             assert r.status_code == 200
             assert r.headers["content-type"].startswith("text/event-stream")
             async for line in r.aiter_lines():

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from paper_trail.agents import graph as graph_mod
 from paper_trail.agents.state import initial_state
+from paper_trail.core.langfuse import trace
 
 
 class DebateService:
@@ -17,6 +18,7 @@ class DebateService:
         debate = await self.repo.create(claim, max_rounds)
         return debate.id  # type: ignore[no-any-return]
 
+    @trace("debate.run")
     async def run(self, debate_id: UUID) -> Any:
         debate = await self.repo.get(debate_id)
         if debate is None:
