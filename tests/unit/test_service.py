@@ -51,7 +51,7 @@ class FakeRepo:
     async def set_status(self, debate_id: UUID, status: str) -> None:
         self.store[debate_id].status = status
 
-    async def list(
+    async def list_page(
         self, cursor: str | None, limit: int = 50
     ) -> tuple[list[FakeDebate], str | None]:
         return list(self.store.values()), None
@@ -67,9 +67,7 @@ async def test_create_and_run(monkeypatch) -> None:  # type: ignore[no-untyped-d
                 **state,
                 "verdict": "TRUE",
                 "confidence": 0.9,
-                "rounds": [
-                    {"side": "proponent", "round": 1, "argument": "a", "evidence": []}
-                ],
+                "rounds": [{"side": "proponent", "round": 1, "argument": "a", "evidence": []}],
                 "transcript_md": "# T",
             }
 
@@ -84,3 +82,38 @@ async def test_create_and_run(monkeypatch) -> None:  # type: ignore[no-untyped-d
     assert result.confidence == 0.9
     assert result.status == "done"
     assert result.transcript_md == "# T"
+
+
+async def test_get_and_list() -> None:
+    repo = FakeRepo()
+    svc = DebateService(repo)
+    did = await svc.create("c", 3)
+    got = await svc.get(did)
+    assert got is not None
+    items, cur = await svc.list(None, 50)
+    assert len(items) == 1
+    assert cur is None
+
+
+async def test_run_unknown_raises() -> None:
+    repo = FakeRepo()
+    svc = DebateService(repo)
+    with pytest.raises(ValueError):
+        await svc.run(uuid4())
+
+
+async def test_run_graph_error_sets_error_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repo = FakeRepo()
+    svc = DebateService(repo)
+
+    class BrokenGraph:
+        async def ainvoke(self, state):  # type: ignore[no-untyped-def]
+            raise RuntimeError("boom")
+
+    from paper_trail.agents import graph as graph_mod
+
+    monkeypatch.setattr(graph_mod, "build_graph", lambda: BrokenGraph())
+    did = await svc.create("c", 3)
+    with pytest.raises(RuntimeError):
+        await svc.run(did)
+    assert repo.store[did].status == "error"

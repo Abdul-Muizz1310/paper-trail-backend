@@ -7,11 +7,10 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from paper_trail.models.debate import Base, Debate
+from paper_trail.models.debate import Base
 from paper_trail.repositories.debates import DebateRepo
 
 
@@ -73,12 +72,12 @@ async def test_list_and_cursor_pagination(session) -> None:  # type: ignore[no-u
     created = []
     for i in range(5):
         created.append(await repo.create(f"claim {i}", 3))
-    items, next_cur = await repo.list(cursor=None, limit=2)
+    items, next_cur = await repo.list_page(cursor=None, limit=2)
     assert len(items) == 2
     assert next_cur is not None
     # newest-first: the last inserted should be first
     assert items[0].claim == "claim 4"
-    items2, next_cur2 = await repo.list(cursor=next_cur, limit=2)
+    items2, _next_cur2 = await repo.list_page(cursor=next_cur, limit=2)
     assert len(items2) == 2
     assert items2[0].claim == "claim 2"
     # strictly older

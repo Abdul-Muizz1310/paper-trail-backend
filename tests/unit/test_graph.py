@@ -64,7 +64,7 @@ async def test_graph_cycles_until_converge(monkeypatch) -> None:  # type: ignore
     _patch_nodes(monkeypatch, judge_confidences=[0.3, 0.9])
     g = graph_mod.build_graph()
     result = await g.ainvoke(initial_state("claim", max_rounds=5))
-    assert len(result["rounds"]) == 4  # 2 rounds × (pro+con)
+    assert len(result["rounds"]) == 4  # 2 rounds x (pro+con)
     assert result["verdict"] == "TRUE"
 
 

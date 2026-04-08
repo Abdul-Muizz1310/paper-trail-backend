@@ -43,6 +43,13 @@ async def test_render_deterministic() -> None:
 
 async def test_render_empty_rounds() -> None:
     out = await render(
-        {"claim": "c", "max_rounds": 1, "round": 0, "rounds": [], "verdict": None, "confidence": None}
+        {
+            "claim": "c",
+            "max_rounds": 1,
+            "round": 0,
+            "rounds": [],
+            "verdict": None,
+            "confidence": None,
+        }
     )
     assert "c" in out["transcript_md"]

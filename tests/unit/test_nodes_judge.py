@@ -16,9 +16,7 @@ async def test_judge_converges_high_confidence(monkeypatch) -> None:  # type: ig
         return _FakeVerdict("TRUE", 0.9)
 
     monkeypatch.setattr(mod, "chat_json", fake_chat_json)
-    out = await mod.judge(
-        {"claim": "c", "max_rounds": 5, "round": 1, "rounds": []}
-    )
+    out = await mod.judge({"claim": "c", "max_rounds": 5, "round": 1, "rounds": []})
     assert out["verdict"] == "TRUE"
     assert out["confidence"] == 0.9
     assert out["need_more"] is False
@@ -30,9 +28,7 @@ async def test_judge_needs_more_low_confidence(monkeypatch) -> None:  # type: ig
         return _FakeVerdict("INCONCLUSIVE", 0.4)
 
     monkeypatch.setattr(mod, "chat_json", fake_chat_json)
-    out = await mod.judge(
-        {"claim": "c", "max_rounds": 5, "round": 1, "rounds": []}
-    )
+    out = await mod.judge({"claim": "c", "max_rounds": 5, "round": 1, "rounds": []})
     assert out["need_more"] is True
     assert out["round"] == 2
 
@@ -42,7 +38,5 @@ async def test_judge_stops_at_max_rounds(monkeypatch) -> None:  # type: ignore[n
         return _FakeVerdict("INCONCLUSIVE", 0.3)
 
     monkeypatch.setattr(mod, "chat_json", fake_chat_json)
-    out = await mod.judge(
-        {"claim": "c", "max_rounds": 3, "round": 3, "rounds": []}
-    )
+    out = await mod.judge({"claim": "c", "max_rounds": 3, "round": 3, "rounds": []})
     assert out["need_more"] is False

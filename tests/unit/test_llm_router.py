@@ -92,17 +92,13 @@ async def test_chat_json_happy_path_validates() -> None:
 
 @respx.mock
 async def test_chat_json_invalid_json_raises() -> None:
-    respx.post(_chat_url()).mock(
-        return_value=httpx.Response(200, json=_resp("not json at all"))
-    )
+    respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp("not json at all")))
     with pytest.raises(LLMError):
         await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
 
 
 @respx.mock
 async def test_chat_json_schema_mismatch_raises() -> None:
-    respx.post(_chat_url()).mock(
-        return_value=httpx.Response(200, json=_resp('{"wrong": "field"}'))
-    )
+    respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp('{"wrong": "field"}')))
     with pytest.raises(LLMError):
         await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)

@@ -8,8 +8,9 @@ from paper_trail.agents.tools.search import SearchHit
 
 async def test_plan_returns_shape(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakePlan:
-        sub_questions = ["q1", "q2"]
-        search_queries = ["sq1"]
+        def __init__(self) -> None:
+            self.sub_questions = ["q1", "q2"]
+            self.search_queries = ["sq1"]
 
     async def fake_chat_json(messages, schema, **kw):  # type: ignore[no-untyped-def]
         return FakePlan()
