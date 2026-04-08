@@ -1,0 +1,79 @@
+# 25 hand-authored claims for paper-trail eval gate.
+# Mix: 10 TRUE, 10 FALSE, 5 INCONCLUSIVE.
+# Categories: geography, basic science, history, sports, math, health/contested.
+
+- id: 1
+  claim: "Water boils at 100 degrees Celsius at sea level under standard atmospheric pressure."
+  expected: "TRUE"
+- id: 2
+  claim: "The Great Wall of China is visible from low Earth orbit with the naked eye under normal conditions."
+  expected: "FALSE"
+- id: 3
+  claim: "Mount Everest is the tallest mountain on Earth as measured from sea level."
+  expected: "TRUE"
+- id: 4
+  claim: "Humans only use 10 percent of their brains."
+  expected: "FALSE"
+- id: 5
+  claim: "Light travels faster than sound in air."
+  expected: "TRUE"
+- id: 6
+  claim: "The Pacific Ocean is the largest ocean on Earth by surface area."
+  expected: "TRUE"
+- id: 7
+  claim: "Goldfish have a memory span of only three seconds."
+  expected: "FALSE"
+- id: 8
+  claim: "The chemical symbol for gold is Au."
+  expected: "TRUE"
+- id: 9
+  claim: "Bats are blind."
+  expected: "FALSE"
+- id: 10
+  claim: "The sum of the interior angles of a Euclidean triangle is 180 degrees."
+  expected: "TRUE"
+- id: 11
+  claim: "Napoleon Bonaparte was unusually short for a Frenchman of his era."
+  expected: "FALSE"
+- id: 12
+  claim: "DNA has a double-helix structure."
+  expected: "TRUE"
+- id: 13
+  claim: "Lightning never strikes the same place twice."
+  expected: "FALSE"
+- id: 14
+  claim: "The speed of light in a vacuum is approximately 299,792,458 meters per second."
+  expected: "TRUE"
+- id: 15
+  claim: "Antarctica is the continent with the lowest average temperature."
+  expected: "TRUE"
+- id: 16
+  claim: "Sharks are mammals."
+  expected: "FALSE"
+- id: 17
+  claim: "The capital of Australia is Canberra, not Sydney."
+  expected: "TRUE"
+- id: 18
+  claim: "Vikings routinely wore horned helmets in battle."
+  expected: "FALSE"
+- id: 19
+  claim: "Jupiter is the largest planet in our solar system."
+  expected: "TRUE"
+- id: 20
+  claim: "Albert Einstein failed mathematics in school as a child."
+  expected: "FALSE"
+- id: 21
+  claim: "Moderate daily coffee consumption is, on net, beneficial for long-term human health in the general adult population."
+  expected: "INCONCLUSIVE"
+- id: 22
+  claim: "A daily glass of red wine meaningfully extends overall life expectancy in healthy adults."
+  expected: "INCONCLUSIVE"
+- id: 23
+  claim: "Intermittent fasting produces greater long-term weight loss than standard calorie restriction in the general adult population."
+  expected: "INCONCLUSIVE"
+- id: 24
+  claim: "Listening to classical music to infants measurably increases their adult IQ."
+  expected: "INCONCLUSIVE"
+- id: 25
+  claim: "Multivitamin supplementation reduces all-cause mortality in well-nourished adults."
+  expected: "INCONCLUSIVE"
