@@ -57,9 +57,7 @@ def is_converged(state: DebateState) -> bool:
     mx = state.get("max_rounds", 5)
     if rd >= mx:
         return True
-    if conf is not None and conf >= CONFIDENCE_THRESHOLD:
-        return True
-    return False
+    return conf is not None and conf >= CONFIDENCE_THRESHOLD
 
 
 def validate_state(state: DebateState) -> None:

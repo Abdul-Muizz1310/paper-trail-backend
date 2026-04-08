@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from paper_trail.core.config import settings
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _make_engine() -> Any:  # type: ignore[no-untyped-def]
+def make_engine() -> Any:
     raise NotImplementedError
 
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
     raise NotImplementedError
-    yield  # type: ignore[unreachable]
+    yield  # pragma: no cover

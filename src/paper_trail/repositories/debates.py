@@ -16,9 +16,7 @@ class DebateRepo:
     async def get(self, debate_id: UUID) -> Any:
         raise NotImplementedError
 
-    async def list(
-        self, cursor: str | None, limit: int = 50
-    ) -> tuple[list[Any], str | None]:
+    async def list_page(self, cursor: str | None, limit: int = 50) -> tuple[list[Any], str | None]:
         raise NotImplementedError
 
     async def update_result(
