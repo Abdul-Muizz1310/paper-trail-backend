@@ -170,13 +170,13 @@ async def test_stream_emits_state_and_done(client_with_fake, monkeypatch) -> Non
     seen_state = False
     seen_done = False
     async with await _make_client() as c, c.stream("GET", f"/debates/{did}/stream") as r:
-            assert r.status_code == 200
-            assert r.headers["content-type"].startswith("text/event-stream")
-            async for line in r.aiter_lines():
-                if line.startswith("event: state"):
-                    seen_state = True
-                if line.startswith("event: done"):
-                    seen_done = True
-                    break
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        async for line in r.aiter_lines():
+            if line.startswith("event: state"):
+                seen_state = True
+            if line.startswith("event: done"):
+                seen_done = True
+                break
     assert seen_state
     assert seen_done
