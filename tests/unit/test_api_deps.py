@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import paper_trail.core.db as db_mod
 from paper_trail.api.deps import get_service
 from paper_trail.core.config import settings
@@ -15,7 +17,5 @@ async def test_get_service_yields_debate_service(monkeypatch) -> None:  # type: 
     gen = get_service()
     svc = await gen.__anext__()
     assert isinstance(svc, DebateService)
-    try:
+    with contextlib.suppress(StopAsyncIteration):
         await gen.__anext__()
-    except StopAsyncIteration:
-        pass
