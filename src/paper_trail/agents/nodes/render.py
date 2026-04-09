@@ -13,6 +13,7 @@ async def render(state: DebateState) -> dict[str, Any]:
     claim = state.get("claim", "")
     verdict = state.get("verdict")
     confidence = state.get("confidence")
+    reasoning = (state.get("reasoning") or "").strip()
     rounds = state.get("rounds") or []
 
     async with span(
@@ -47,6 +48,10 @@ async def render(state: DebateState) -> dict[str, Any]:
         lines.append("## Verdict")
         lines.append(f"- Verdict: **{verdict}**")
         lines.append(f"- Confidence: {confidence}")
+        if reasoning:
+            lines.append("")
+            lines.append("## Reasoning")
+            lines.append(reasoning)
         transcript = "\n".join(lines)
         update_current_span(
             output={

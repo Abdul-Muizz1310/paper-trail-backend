@@ -83,3 +83,35 @@ class DebateRepo:
         d.status = status
         d.updated_at = datetime.utcnow()
         await self.session.commit()
+
+    async def update_judge_progress(
+        self,
+        debate_id: UUID,
+        verdict: str | None,
+        confidence: float | None,
+    ) -> None:
+        """Persist interim verdict/confidence after each judge pass."""
+        d = await self.get(debate_id)
+        if d is None:
+            raise ValueError(f"debate {debate_id} not found")
+        if verdict is not None:
+            d.verdict = verdict
+        if confidence is not None:
+            d.confidence = float(confidence)
+        d.updated_at = datetime.utcnow()
+        await self.session.commit()
+
+    async def update_rounds(
+        self, debate_id: UUID, rounds: list[dict[str, Any]]
+    ) -> None:
+        """Incrementally persist round progress while the graph runs.
+
+        This lets SSE consumers see rounds appear one at a time instead
+        of all at once at the end of the debate.
+        """
+        d = await self.get(debate_id)
+        if d is None:
+            raise ValueError(f"debate {debate_id} not found")
+        d.rounds = rounds
+        d.updated_at = datetime.utcnow()
+        await self.session.commit()

@@ -38,5 +38,6 @@ Given the claim and the rounds of the debate, return JSON with exactly:
 
 - `verdict`: one of `TRUE`, `FALSE`, `INCONCLUSIVE`
 - `confidence`: a number in [0, 1] following the rubric above
+- `reasoning`: a 2-4 sentence paragraph (not a bullet list) explaining *why* you reached this verdict. Reference specific evidence, sources, or arguments from the rounds. Name the agents when relevant ("The proponent cited…", "The skeptic pointed out…"). This paragraph is shown directly to the end user — write it as a confident, neutral summary of your decision, not as advice to another agent.
 
 Return strictly valid JSON. No prose, no explanations outside the JSON.

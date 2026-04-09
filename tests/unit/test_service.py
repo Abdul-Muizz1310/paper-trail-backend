@@ -51,6 +51,23 @@ class FakeRepo:
     async def set_status(self, debate_id: UUID, status: str) -> None:
         self.store[debate_id].status = status
 
+    async def update_rounds(
+        self, debate_id: UUID, rounds: list[dict]
+    ) -> None:
+        self.store[debate_id].rounds = list(rounds)
+
+    async def update_judge_progress(
+        self,
+        debate_id: UUID,
+        verdict: str | None,
+        confidence: float | None,
+    ) -> None:
+        d = self.store[debate_id]
+        if verdict is not None:
+            d.verdict = verdict
+        if confidence is not None:
+            d.confidence = float(confidence)
+
     async def list_page(
         self, cursor: str | None, limit: int = 50
     ) -> tuple[list[FakeDebate], str | None]:
@@ -62,14 +79,29 @@ async def test_create_and_run(monkeypatch) -> None:  # type: ignore[no-untyped-d
     svc = DebateService(repo)
 
     class FakeGraph:
-        async def ainvoke(self, state):  # type: ignore[no-untyped-def]
-            return {
-                **state,
-                "verdict": "TRUE",
-                "confidence": 0.9,
-                "rounds": [{"side": "proponent", "round": 1, "argument": "a", "evidence": []}],
-                "transcript_md": "# T",
+        async def astream(self, state, stream_mode="updates"):  # type: ignore[no-untyped-def]
+            yield {
+                "proponent": {
+                    "rounds": [
+                        {
+                            "side": "proponent",
+                            "round": 1,
+                            "argument": "a",
+                            "evidence": [],
+                        }
+                    ]
+                }
             }
+            yield {
+                "judge": {
+                    "verdict": "TRUE",
+                    "confidence": 0.9,
+                    "reasoning": "strong evidence",
+                    "need_more": False,
+                    "round": 1,
+                }
+            }
+            yield {"render": {"transcript_md": "# T"}}
 
     from paper_trail.agents import graph as graph_mod
 
@@ -107,8 +139,9 @@ async def test_run_graph_error_sets_error_status(monkeypatch) -> None:  # type: 
     svc = DebateService(repo)
 
     class BrokenGraph:
-        async def ainvoke(self, state):  # type: ignore[no-untyped-def]
+        async def astream(self, state, stream_mode="updates"):  # type: ignore[no-untyped-def]
             raise RuntimeError("boom")
+            yield  # pragma: no cover — make this an async generator
 
     from paper_trail.agents import graph as graph_mod
 

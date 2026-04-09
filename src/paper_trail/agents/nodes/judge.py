@@ -16,6 +16,14 @@ from paper_trail.core.prompts import load
 class Verdict(BaseModel):
     verdict: Literal["TRUE", "FALSE", "INCONCLUSIVE"]
     confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str = Field(
+        default="",
+        description=(
+            "A 2-4 sentence paragraph explaining the decision. Reference "
+            "specific evidence or agents when possible. This is shown to "
+            "the end user alongside the verdict."
+        ),
+    )
 
 
 async def judge(state: DebateState) -> dict[str, Any]:
@@ -44,7 +52,10 @@ async def judge(state: DebateState) -> dict[str, Any]:
             f"- Remaining rounds if needed: {max(0, max_rounds - cur_round - 1)}\n\n"
             "## Your task\n"
             "Apply the verdict and confidence rubrics from your system prompt. "
-            "Return strictly valid JSON with keys `verdict` and `confidence`."
+            "Return strictly valid JSON with keys `verdict`, `confidence`, "
+            "and `reasoning`. The `reasoning` field must be a 2-4 sentence "
+            "paragraph (not a bullet list) explaining the decision, "
+            "referencing specific evidence or arguments from the rounds."
         )
         result = await chat_json(
             [
@@ -55,12 +66,14 @@ async def judge(state: DebateState) -> dict[str, Any]:
         )
         verdict = result.verdict
         confidence = float(result.confidence)
+        reasoning = (result.reasoning or "").strip()
         next_round = cur_round + 1
         need_more = confidence < CONFIDENCE_THRESHOLD and next_round < max_rounds
         update_current_span(
             output={
                 "verdict": verdict,
                 "confidence": confidence,
+                "reasoning_length": len(reasoning),
                 "need_more": need_more,
                 "next_round": next_round,
             }
@@ -68,6 +81,7 @@ async def judge(state: DebateState) -> dict[str, Any]:
         return {
             "verdict": verdict,
             "confidence": confidence,
+            "reasoning": reasoning,
             "need_more": need_more,
             "round": next_round,
         }

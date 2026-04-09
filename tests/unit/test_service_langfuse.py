@@ -42,6 +42,18 @@ class FakeRepo:
     async def set_status(self, debate_id: UUID, status: str) -> None:
         self.store[debate_id].status = status
 
+    async def update_rounds(self, debate_id: UUID, rounds: list[dict]) -> None:
+        self.store[debate_id].rounds = list(rounds)
+
+    async def update_judge_progress(  # type: ignore[no-untyped-def]
+        self, debate_id, verdict, confidence
+    ) -> None:
+        d = self.store[debate_id]
+        if verdict is not None:
+            d.verdict = verdict
+        if confidence is not None:
+            d.confidence = float(confidence)
+
 
 async def test_run_returns_value_under_noop_langfuse(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The @trace decorator must preserve the wrapped function's return value
@@ -56,14 +68,17 @@ async def test_run_returns_value_under_noop_langfuse(monkeypatch) -> None:  # ty
     svc = DebateService(repo)
 
     class FakeGraph:
-        async def ainvoke(self, state):  # type: ignore[no-untyped-def]
-            return {
-                **state,
-                "verdict": "FALSE",
-                "confidence": 0.42,
-                "rounds": [],
-                "transcript_md": "# x",
+        async def astream(self, state, stream_mode="updates"):  # type: ignore[no-untyped-def]
+            yield {
+                "judge": {
+                    "verdict": "FALSE",
+                    "confidence": 0.42,
+                    "reasoning": "r",
+                    "need_more": False,
+                    "round": 1,
+                }
             }
+            yield {"render": {"transcript_md": "# x"}}
 
     from paper_trail.agents import graph as graph_mod
 

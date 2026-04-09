@@ -6,9 +6,10 @@ from paper_trail.agents.nodes import judge as mod
 
 
 class _FakeVerdict:
-    def __init__(self, verdict: str, confidence: float) -> None:
+    def __init__(self, verdict: str, confidence: float, reasoning: str = "") -> None:
         self.verdict = verdict
         self.confidence = confidence
+        self.reasoning = reasoning
 
 
 async def test_judge_converges_high_confidence(monkeypatch) -> None:  # type: ignore[no-untyped-def]

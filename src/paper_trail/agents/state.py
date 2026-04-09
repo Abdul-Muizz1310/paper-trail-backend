@@ -23,6 +23,7 @@ class DebateState(TypedDict, total=False):
     plan: dict[str, Any] | None
     verdict: Verdict | None
     confidence: float | None
+    reasoning: str | None
     need_more: bool
     transcript_md: str | None
 

@@ -55,8 +55,57 @@ class DebateService:
             await self.repo.set_status(debate_id, "running")
             state = initial_state(debate.claim, debate.max_rounds)
             graph = graph_mod.build_graph()
+
+            # Stream node updates so rounds land in the DB as they're
+            # produced, not all at once at the end of ainvoke(). The
+            # SSE endpoint polls repo.get(), so incremental persistence
+            # is what actually makes the debate feel "live".
+            result: dict[str, Any] = {
+                "verdict": None,
+                "confidence": None,
+                "rounds": [],
+                "transcript_md": "",
+                "round": 0,
+            }
+            running_rounds: list[dict[str, Any]] = []
             try:
-                result = await graph.ainvoke(state)
+                async for chunk in graph.astream(state, stream_mode="updates"):
+                    # `chunk` is {node_name: node_output_dict}. proponent
+                    # and skeptic return {"rounds": [entry]} which the
+                    # state reducer would concat; we mirror that here so
+                    # we can persist after each node.
+                    for node_name, update in chunk.items():
+                        if not isinstance(update, dict):
+                            continue
+                        # Rounds: append (reducer is operator.add).
+                        new_rounds = update.get("rounds")
+                        if isinstance(new_rounds, list) and new_rounds:
+                            running_rounds = [*running_rounds, *new_rounds]
+                            result["rounds"] = running_rounds
+                            # Persist so SSE consumers see progress.
+                            await self.repo.update_rounds(
+                                debate_id, running_rounds
+                            )
+                        # Judge / render emit top-level fields.
+                        for key in (
+                            "verdict",
+                            "confidence",
+                            "transcript_md",
+                            "round",
+                            "need_more",
+                            "plan",
+                        ):
+                            if key in update:
+                                result[key] = update[key]
+                        # Mirror LangGraph's reducer: after judge,
+                        # persist the verdict + confidence (so the
+                        # confidence bar fills live in the UI).
+                        if node_name == "judge":
+                            await self.repo.update_judge_progress(
+                                debate_id,
+                                verdict=result.get("verdict"),
+                                confidence=result.get("confidence"),
+                            )
             except Exception as exc:
                 await self.repo.set_status(debate_id, "error")
                 update_current_trace(
