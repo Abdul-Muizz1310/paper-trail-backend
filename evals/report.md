@@ -1,16 +1,19 @@
 # paper-trail eval report
 
-_Status: placeholder. Real numbers will be written here by `python -m evals.run_eval` against a live Neon + OpenRouter environment before the v0.1.0 tag._
-
-_An earlier smoke run (5 claims) on 2026-04-09 exhausted the OpenRouter free-tier rate limits for both primary (`qwen/qwen3-next-80b-a3b-instruct:free`) and fallback (`z-ai/glm-4.5-air:free`) models simultaneously, recording ERROR on every claim. The runner correctly tolerated the failures and wrote a report, but the result is not representative — retry after the rate window resets._
-
 ## Summary
-- Mode: _pending_
-- Timestamp: _pending_
-- Claims: _pending_
-- Accuracy: _pending_
-- Avg rounds: _pending_
-- p95 latency (ms): _pending_
+- Mode: real
+- Timestamp: 2026-04-09 08:11:06Z
+- Claims: 5
+- Accuracy: 0.600
+- Avg rounds: 0.60
+- p95 latency (ms): 213765.8
 
 ## Details
-_No successful runs yet._
+
+| id | expected | actual | match | confidence | rounds | wall_ms |
+|---:|:---|:---|:---:|---:|---:|---:|
+| 1 | TRUE | TRUE | Y | 0.95 | 1 | 188039.2 |
+| 2 | FALSE | FALSE | Y | 0.92 | 1 | 132643.5 |
+| 3 | TRUE | TRUE | Y | 0.98 | 1 | 213765.8 |
+| 4 | FALSE | ERROR | N | - | 0 | 52488.5 |
+| 5 | TRUE | ERROR | N | - | 0 | 53774.8 |

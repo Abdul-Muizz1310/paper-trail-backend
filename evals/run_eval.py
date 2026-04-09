@@ -134,11 +134,19 @@ def run_dry(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
-async def run_real(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:  # pragma: no cover
+async def run_real(
+    claims: list[dict[str, Any]],
+    *,
+    delay_s: float = 0.0,
+    retry_errors: bool = True,
+) -> list[dict[str, Any]]:  # pragma: no cover
     """Real-mode runner: invokes the live LangGraph against OpenRouter.
 
     Per-claim failures are caught and recorded as ``actual_verdict="ERROR"``
     so a single rate-limit or network blip doesn't kill the whole batch.
+    ``delay_s`` inserts a cooldown between successful claims so upstream
+    free-tier rate windows can refill. ``retry_errors`` gives each claim a
+    second chance after a longer cooldown before giving up.
     Excluded from coverage — exercised manually before tagging v0.1.0.
     """
     from paper_trail.agents.graph import build_graph
@@ -146,12 +154,13 @@ async def run_real(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:  # pra
 
     graph = build_graph()
     results: list[dict[str, Any]] = []
-    for c in claims:
+
+    async def _run_one(claim: dict[str, Any]) -> dict[str, Any]:
         t0 = time.perf_counter()
         row: dict[str, Any] = {
-            "id": c["id"],
-            "claim": c["claim"],
-            "expected": c["expected"],
+            "id": claim["id"],
+            "claim": claim["claim"],
+            "expected": claim["expected"],
             "actual_verdict": "ERROR",
             "confidence": None,
             "rounds": 0,
@@ -159,22 +168,39 @@ async def run_real(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:  # pra
             "error": None,
         }
         try:
-            state = initial_state(c["claim"], max_rounds=5)
+            state = initial_state(claim["claim"], max_rounds=5)
             final = await graph.ainvoke(state)
             row["actual_verdict"] = final.get("verdict") or "INCONCLUSIVE"
             row["confidence"] = final.get("confidence")
             row["rounds"] = final.get("round", 0)
         except Exception as exc:
             row["error"] = f"{type(exc).__name__}: {exc}"
-            print(f"[eval] claim {c['id']} failed: {row['error']}", flush=True)
         finally:
             row["wall_ms"] = (time.perf_counter() - t0) * 1000.0
-            results.append(row)
+        return row
+
+    for idx, c in enumerate(claims):
+        row = await _run_one(c)
+        if row["actual_verdict"] == "ERROR" and retry_errors:
             print(
-                f"[eval] claim {c['id']}: {row['actual_verdict']} "
-                f"(expected {c['expected']}, {row['wall_ms']:.0f}ms)",
+                f"[eval] claim {c['id']} failed ({row['error']}); cooldown 60s and retrying once",
                 flush=True,
             )
+            await asyncio.sleep(60.0)
+            retry_row = await _run_one(c)
+            # Carry over wall_ms so p95 reflects total work spent on this claim.
+            retry_row["wall_ms"] += row["wall_ms"]
+            row = retry_row
+        if row["actual_verdict"] == "ERROR":
+            print(f"[eval] claim {c['id']} failed: {row['error']}", flush=True)
+        results.append(row)
+        print(
+            f"[eval] claim {c['id']}: {row['actual_verdict']} "
+            f"(expected {c['expected']}, {row['wall_ms']:.0f}ms)",
+            flush=True,
+        )
+        if delay_s > 0 and idx < len(claims) - 1:
+            await asyncio.sleep(delay_s)
     return results
 
 
@@ -194,6 +220,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_CLAIMS_PATH,
         help="input claims yaml path",
     )
+    p.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help="cooldown in seconds between successful claims (helps free-tier rate limits)",
+    )
+    p.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="disable the 60s retry-once on per-claim failures",
+    )
     return p.parse_args(argv)
 
 
@@ -206,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover
         results = run_dry(claims)
         mode = "dry-run"
     else:
-        results = asyncio.run(run_real(claims))
+        results = asyncio.run(run_real(claims, delay_s=args.delay, retry_errors=not args.no_retry))
         mode = "real"
     write_report(results, mode=mode, path=args.report_path)
     metrics = compute_metrics(results)
