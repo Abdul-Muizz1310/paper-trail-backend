@@ -137,6 +137,8 @@ def run_dry(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def run_real(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:  # pragma: no cover
     """Real-mode runner: invokes the live LangGraph against OpenRouter.
 
+    Per-claim failures are caught and recorded as ``actual_verdict="ERROR"``
+    so a single rate-limit or network blip doesn't kill the whole batch.
     Excluded from coverage — exercised manually before tagging v0.1.0.
     """
     from paper_trail.agents.graph import build_graph
@@ -146,20 +148,33 @@ async def run_real(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:  # pra
     results: list[dict[str, Any]] = []
     for c in claims:
         t0 = time.perf_counter()
-        state = initial_state(c["claim"], max_rounds=5)
-        final = await graph.ainvoke(state)
-        wall_ms = (time.perf_counter() - t0) * 1000.0
-        results.append(
-            {
-                "id": c["id"],
-                "claim": c["claim"],
-                "expected": c["expected"],
-                "actual_verdict": final.get("verdict") or "INCONCLUSIVE",
-                "confidence": final.get("confidence"),
-                "rounds": final.get("round", 0),
-                "wall_ms": wall_ms,
-            }
-        )
+        row: dict[str, Any] = {
+            "id": c["id"],
+            "claim": c["claim"],
+            "expected": c["expected"],
+            "actual_verdict": "ERROR",
+            "confidence": None,
+            "rounds": 0,
+            "wall_ms": 0.0,
+            "error": None,
+        }
+        try:
+            state = initial_state(c["claim"], max_rounds=5)
+            final = await graph.ainvoke(state)
+            row["actual_verdict"] = final.get("verdict") or "INCONCLUSIVE"
+            row["confidence"] = final.get("confidence")
+            row["rounds"] = final.get("round", 0)
+        except Exception as exc:
+            row["error"] = f"{type(exc).__name__}: {exc}"
+            print(f"[eval] claim {c['id']} failed: {row['error']}", flush=True)
+        finally:
+            row["wall_ms"] = (time.perf_counter() - t0) * 1000.0
+            results.append(row)
+            print(
+                f"[eval] claim {c['id']}: {row['actual_verdict']} "
+                f"(expected {c['expected']}, {row['wall_ms']:.0f}ms)",
+                flush=True,
+            )
     return results
 
 
