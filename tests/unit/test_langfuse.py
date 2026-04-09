@@ -42,8 +42,11 @@ def test_trace_propagates_original_exception(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_trace_swallows_langfuse_client_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     class BrokenClient:
-        def trace(self, *args: object, **kwargs: object) -> object:
+        def start_as_current_observation(self, *args: object, **kwargs: object) -> object:
             raise RuntimeError("langfuse exploded")
+
+        def flush(self) -> None:
+            return None
 
     monkeypatch.setattr(lf_module, "_client", BrokenClient(), raising=False)
     monkeypatch.setattr(lf_module, "_client_initialized", True, raising=False)
@@ -53,6 +56,31 @@ def test_trace_swallows_langfuse_client_errors(monkeypatch: pytest.MonkeyPatch) 
         return "ok"
 
     assert asyncio.run(work()) == "ok"
+
+
+def test_trace_swallows_span_exit_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BadSpan:
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            raise RuntimeError("exit boom")
+
+    class FlakyClient:
+        def start_as_current_observation(self, **kwargs: object) -> object:
+            return BadSpan()
+
+        def flush(self) -> None:
+            raise RuntimeError("flush boom")
+
+    monkeypatch.setattr(lf_module, "_client", FlakyClient(), raising=False)
+    monkeypatch.setattr(lf_module, "_client_initialized", True, raising=False)
+
+    @lf_module.trace("x")
+    async def work() -> int:
+        return 7
+
+    assert asyncio.run(work()) == 7
 
 
 def test_trace_event_swallows_when_client_none(monkeypatch: pytest.MonkeyPatch) -> None:
