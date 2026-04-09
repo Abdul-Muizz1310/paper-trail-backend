@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 from typing import Any, Literal, TypedDict
 
 import httpx
@@ -10,6 +12,16 @@ from pydantic import BaseModel, ValidationError
 
 from paper_trail.core.config import settings
 from paper_trail.core.errors import LLMError
+
+# Retry policy for transient 429s on a single model tier.
+# OpenRouter free tiers are bursty (~1-2 req/s per upstream) and proponent/
+# skeptic nodes run in parallel, so without jitter they race each other
+# into the same backoff window. Exponential backoff with jitter desyncs
+# parallel callers and handles sustained bursts up to ~30s.
+_RATE_LIMIT_RETRIES = 5
+_RATE_LIMIT_BACKOFF_BASE_S = 1.5
+_RATE_LIMIT_JITTER_S = 0.75
+
 
 ModelTier = Literal["primary", "fast", "fallback"]
 
@@ -72,6 +84,29 @@ async def _one_call(
         raise LLMError("bad_response", str(e)) from e
 
 
+async def _one_call_with_retry(
+    messages: list[ChatMessage],
+    model: str,
+    temperature: float,
+    *,
+    json_mode: bool,
+) -> str:
+    last: LLMError | None = None
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        try:
+            return await _one_call(messages, model, temperature, json_mode=json_mode)
+        except LLMError as exc:
+            if exc.stage != "rate_limited":
+                raise
+            last = exc
+            if attempt < _RATE_LIMIT_RETRIES - 1:
+                delay = _RATE_LIMIT_BACKOFF_BASE_S * (2**attempt)
+                delay += random.random() * _RATE_LIMIT_JITTER_S
+                await asyncio.sleep(delay)
+    assert last is not None
+    raise last
+
+
 async def chat(
     messages: list[ChatMessage],
     *,
@@ -80,10 +115,12 @@ async def chat(
 ) -> str:
     """Call OpenRouter with primary->fallback retry."""
     try:
-        return await _one_call(messages, _resolve_model(model), temperature, json_mode=False)
+        return await _one_call_with_retry(
+            messages, _resolve_model(model), temperature, json_mode=False
+        )
     except LLMError as primary_err:
         try:
-            return await _one_call(
+            return await _one_call_with_retry(
                 messages,
                 _resolve_model("fallback"),
                 temperature,
@@ -105,9 +142,11 @@ async def chat_json(
 ) -> Any:
     """Call OpenRouter in JSON mode and validate against a Pydantic schema."""
     try:
-        raw = await _one_call(messages, _resolve_model(model), temperature, json_mode=True)
+        raw = await _one_call_with_retry(
+            messages, _resolve_model(model), temperature, json_mode=True
+        )
     except LLMError:
-        raw = await _one_call(
+        raw = await _one_call_with_retry(
             messages,
             _resolve_model("fallback"),
             temperature,
