@@ -34,10 +34,12 @@ async def plan(state: DebateState) -> dict[str, Any]:
         search_queries = list(getattr(result, "search_queries", []) or [])
 
         evidence: list[dict[str, Any]] = []
+        failed_queries: list[dict[str, str]] = []
         for q in search_queries:
             try:
                 hits = await search(q)
-            except Exception:
+            except Exception as exc:
+                failed_queries.append({"query": q, "error": f"{type(exc).__name__}: {exc}"})
                 continue
             for h in hits:
                 evidence.append(
@@ -58,8 +60,10 @@ async def plan(state: DebateState) -> dict[str, Any]:
                 "sub_question_count": len(sub_questions),
                 "search_query_count": len(search_queries),
                 "evidence_count": len(evidence),
+                "failed_query_count": len(failed_queries),
                 "sub_questions": sub_questions,
                 "search_queries": search_queries,
-            }
+            },
+            metadata={"failed_queries": failed_queries} if failed_queries else None,
         )
         return {"plan": plan_payload}
