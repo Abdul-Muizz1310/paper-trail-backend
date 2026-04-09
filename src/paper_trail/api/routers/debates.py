@@ -24,8 +24,11 @@ from paper_trail.services.debates import DebateService
 router = APIRouter(prefix="/debates", tags=["debates"])
 
 # Tunables (monkeypatched in tests).
-STREAM_POLL_SECONDS: float = 0.5
-STREAM_MAX_SECONDS: float = 60.0
+STREAM_POLL_SECONDS: float = 0.25
+STREAM_MAX_SECONDS: float = 120.0
+# SSE keepalive: emit a comment line every N seconds so proxies don't
+# drop an idle stream while the LLM is thinking.
+STREAM_KEEPALIVE_SECONDS: float = 10.0
 
 
 def _to_debate_out(d: Any) -> DebateOut:
@@ -102,6 +105,7 @@ async def stream_debate(
     async def event_gen() -> Any:
         deadline = time.monotonic() + STREAM_MAX_SECONDS
         last_snapshot: tuple[Any, ...] | None = None
+        last_emit = time.monotonic()
         terminal_status = {"done", "failed", "error"}
         while time.monotonic() < deadline:
             d = await service.get(debate_id)
@@ -111,14 +115,21 @@ async def stream_debate(
                     "data": json.dumps({"reason": "not_found"}),
                 }
                 return
+            rounds_list = list(d.rounds or [])
+            # Snapshot includes rounds count AND a cheap fingerprint of
+            # the latest round text so the stream fires when an agent
+            # finishes writing even if `rounds_count` didn't change.
+            latest_len = len(rounds_list[-1].get("argument", "")) if rounds_list else 0
             snapshot = (
                 d.status,
                 d.verdict,
                 d.confidence,
-                len(list(d.rounds or [])),
+                len(rounds_list),
+                latest_len,
             )
             if snapshot != last_snapshot:
                 last_snapshot = snapshot
+                last_emit = time.monotonic()
                 yield {
                     "event": "state",
                     "data": json.dumps(
@@ -127,10 +138,17 @@ async def stream_debate(
                             "status": d.status,
                             "verdict": d.verdict,
                             "confidence": d.confidence,
-                            "rounds_count": len(list(d.rounds or [])),
+                            "rounds_count": len(rounds_list),
+                            # Inline the rounds so the client doesn't
+                            # have to round-trip a GET after every tick.
+                            "rounds": rounds_list,
                         }
                     ),
                 }
+            elif time.monotonic() - last_emit > STREAM_KEEPALIVE_SECONDS:
+                # Emit an SSE comment to keep the connection warm.
+                last_emit = time.monotonic()
+                yield {"event": "ping", "data": json.dumps({"t": last_emit})}
             if d.status in terminal_status:
                 yield {
                     "event": "done",
@@ -140,7 +158,8 @@ async def stream_debate(
                             "status": d.status,
                             "verdict": d.verdict,
                             "confidence": d.confidence,
-                            "rounds_count": len(list(d.rounds or [])),
+                            "rounds_count": len(rounds_list),
+                            "rounds": rounds_list,
                         }
                     ),
                 }
