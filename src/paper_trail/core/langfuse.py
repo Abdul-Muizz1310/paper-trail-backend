@@ -53,6 +53,7 @@ def _json_dump(value: Any) -> str:
     except Exception:
         return str(value)
 
+
 _logger = structlog.get_logger(__name__)
 
 _client: Any = None
