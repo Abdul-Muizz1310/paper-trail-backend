@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from paper_trail.core.config import settings
 from paper_trail.core.errors import LLMError
+from paper_trail.core.langfuse import span, update_current_span
 
 # Retry policy for transient 429s on a single model tier.
 # OpenRouter free tiers are bursty (~1-2 req/s per upstream) and proponent/
@@ -64,24 +65,49 @@ async def _one_call(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-    async with httpx.AsyncClient(timeout=settings.openrouter_timeout_s) as client:
+    gen_name = f"llm.{'json' if json_mode else 'chat'}"
+    async with span(
+        gen_name,
+        input={"messages": list(messages)},
+        metadata={"model": model, "temperature": temperature, "json_mode": json_mode},
+        as_type="generation",
+    ):
+        async with httpx.AsyncClient(timeout=settings.openrouter_timeout_s) as client:
+            try:
+                resp = await client.post(url, headers=_headers(), json=payload)
+            except httpx.TimeoutException as e:
+                update_current_span(metadata={"error": "timeout", "error_detail": str(e)})
+                raise LLMError("timeout", str(e)) from e
+            except httpx.HTTPError as e:
+                update_current_span(metadata={"error": "http_error", "error_detail": str(e)})
+                raise LLMError("http_error", str(e)) from e
+        if resp.status_code == 429:
+            update_current_span(metadata={"error": "rate_limited", "status_code": 429})
+            raise LLMError("rate_limited", f"status={resp.status_code}")
+        if resp.status_code >= 500:
+            update_current_span(metadata={"error": "server_error", "status_code": resp.status_code})
+            raise LLMError("server_error", f"status={resp.status_code}")
+        if resp.status_code >= 400:
+            update_current_span(metadata={"error": "client_error", "status_code": resp.status_code})
+            raise LLMError("client_error", f"status={resp.status_code}")
+        data = resp.json()
         try:
-            resp = await client.post(url, headers=_headers(), json=payload)
-        except httpx.TimeoutException as e:
-            raise LLMError("timeout", str(e)) from e
-        except httpx.HTTPError as e:
-            raise LLMError("http_error", str(e)) from e
-    if resp.status_code == 429:
-        raise LLMError("rate_limited", f"status={resp.status_code}")
-    if resp.status_code >= 500:
-        raise LLMError("server_error", f"status={resp.status_code}")
-    if resp.status_code >= 400:
-        raise LLMError("client_error", f"status={resp.status_code}")
-    data = resp.json()
-    try:
-        return str(data["choices"][0]["message"]["content"])
-    except (KeyError, IndexError, TypeError) as e:
-        raise LLMError("bad_response", str(e)) from e
+            completion = str(data["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError) as e:
+            update_current_span(metadata={"error": "bad_response", "error_detail": str(e)})
+            raise LLMError("bad_response", str(e)) from e
+        usage = data.get("usage") or {}
+        update_current_span(
+            output=completion,
+            metadata={
+                "model": model,
+                "status_code": resp.status_code,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
+        )
+        return completion
 
 
 async def _one_call_with_retry(
