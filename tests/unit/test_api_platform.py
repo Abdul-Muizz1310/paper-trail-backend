@@ -145,8 +145,6 @@ async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatc
     monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
 
     # Override get() to return None after run (simulating disappearance)
-    original_get = fake_service.get
-
     async def vanishing_get(debate_id: UUID) -> Any:
         return None  # always return None
 

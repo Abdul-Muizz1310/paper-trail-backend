@@ -14,7 +14,6 @@ from paper_trail.agents.nodes._format import (
     format_prior_rounds,
 )
 
-
 # ---------------------------------------------------------------------------
 # format_evidence
 # ---------------------------------------------------------------------------
@@ -77,7 +76,7 @@ def test_format_evidence_truncates_long_snippet() -> None:
     out = format_evidence([{"title": "T", "url": "https://x", "snippet": long_snippet}])
     assert "…" in out
     # snippet segment should be ≤ _MAX_SNIPPET_CHARS + ellipsis
-    snippet_line = [line for line in out.splitlines() if line.startswith("   ")][0]
+    snippet_line = next(line for line in out.splitlines() if line.startswith("   "))
     assert len(snippet_line.strip()) <= _MAX_SNIPPET_CHARS + 1
 
 

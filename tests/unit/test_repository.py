@@ -5,6 +5,7 @@ Note: uses sqlite+aiosqlite for portability. pgvector integration is deferred to
 
 from __future__ import annotations
 
+from datetime import UTC
 from uuid import uuid4
 
 import pytest
@@ -191,11 +192,11 @@ async def test_update_rounds_raises_when_missing(session) -> None:  # type: igno
 
 async def test_cursor_roundtrip_encode_decode() -> None:
     """Encoding then decoding a cursor yields the original values."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from paper_trail.repositories.debates import _decode_cursor, _encode_cursor
 
-    ts = datetime(2026, 4, 10, 12, 30, 45, tzinfo=timezone.utc)
+    ts = datetime(2026, 4, 10, 12, 30, 45, tzinfo=UTC)
     did = uuid4()
     encoded = _encode_cursor(ts, did)
     decoded_ts, decoded_id = _decode_cursor(encoded)

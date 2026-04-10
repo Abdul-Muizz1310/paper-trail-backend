@@ -11,14 +11,14 @@ from sqlalchemy import JSON, DateTime, Enum, Float, Integer, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-class DebateStatus(str, enum.Enum):
+class DebateStatus(enum.StrEnum):
     pending = "pending"
     running = "running"
     done = "done"
     error = "error"
 
 
-class DebateVerdict(str, enum.Enum):
+class DebateVerdict(enum.StrEnum):
     TRUE = "TRUE"
     FALSE = "FALSE"
     INCONCLUSIVE = "INCONCLUSIVE"

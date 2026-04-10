@@ -12,6 +12,7 @@ from paper_trail.schemas.debates import (
     DebateCreateIn,
     DebateOut,
     PlatformDebateIn,
+    coerce_verdict,
 )
 
 
@@ -67,8 +68,6 @@ def test_debate_out_roundtrip() -> None:
 # ---------------------------------------------------------------------------
 # coerce_verdict
 # ---------------------------------------------------------------------------
-
-from paper_trail.schemas.debates import coerce_verdict
 
 
 def test_coerce_verdict_valid_values() -> None:
