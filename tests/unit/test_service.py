@@ -51,9 +51,7 @@ class FakeRepo:
     async def set_status(self, debate_id: UUID, status: str) -> None:
         self.store[debate_id].status = status
 
-    async def update_rounds(
-        self, debate_id: UUID, rounds: list[dict]
-    ) -> None:
+    async def update_rounds(self, debate_id: UUID, rounds: list[dict]) -> None:
         self.store[debate_id].rounds = list(rounds)
 
     async def update_judge_progress(

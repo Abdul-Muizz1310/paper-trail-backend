@@ -85,9 +85,7 @@ class DebateService:
                             running_rounds = [*running_rounds, *new_rounds]
                             result["rounds"] = running_rounds
                             # Persist so SSE consumers see progress.
-                            await self.repo.update_rounds(
-                                debate_id, running_rounds
-                            )
+                            await self.repo.update_rounds(debate_id, running_rounds)
                         # Judge / render emit top-level fields.
                         for key in (
                             "verdict",
@@ -144,7 +142,5 @@ class DebateService:
     async def get(self, debate_id: UUID) -> Debate | None:
         return await self.repo.get(debate_id)
 
-    async def list(
-        self, cursor: str | None, limit: int = 50
-    ) -> tuple[list[Debate], str | None]:
+    async def list(self, cursor: str | None, limit: int = 50) -> tuple[list[Debate], str | None]:
         return await self.repo.list_page(cursor, limit)

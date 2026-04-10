@@ -101,9 +101,7 @@ class DebateRepo:
         d.updated_at = datetime.utcnow()
         await self.session.commit()
 
-    async def update_rounds(
-        self, debate_id: UUID, rounds: list[dict[str, Any]]
-    ) -> None:
+    async def update_rounds(self, debate_id: UUID, rounds: list[dict[str, Any]]) -> None:
         """Incrementally persist round progress while the graph runs.
 
         This lets SSE consumers see rounds appear one at a time instead
