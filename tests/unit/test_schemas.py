@@ -62,3 +62,25 @@ def test_debate_out_roundtrip() -> None:
     m2 = DebateOut(**data)
     assert m2.id == did
     assert m2.verdict == "TRUE"
+
+
+# ---------------------------------------------------------------------------
+# coerce_verdict
+# ---------------------------------------------------------------------------
+
+from paper_trail.schemas.debates import coerce_verdict
+
+
+def test_coerce_verdict_valid_values() -> None:
+    assert coerce_verdict("TRUE") == "TRUE"
+    assert coerce_verdict("FALSE") == "FALSE"
+    assert coerce_verdict("INCONCLUSIVE") == "INCONCLUSIVE"
+
+
+def test_coerce_verdict_none_returns_none() -> None:
+    assert coerce_verdict(None) is None
+
+
+def test_coerce_verdict_invalid_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="invalid verdict"):
+        coerce_verdict("MAYBE")

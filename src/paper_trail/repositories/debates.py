@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from paper_trail.models.debate import Debate
+from paper_trail.models.debate import Debate, DebateStatus
 
 
 def _encode_cursor(created_at: datetime, did: UUID) -> str:
@@ -29,7 +29,7 @@ class DebateRepo:
         self.session = session
 
     async def create(self, claim: str, max_rounds: int) -> Debate:
-        d = Debate(claim=claim, max_rounds=max_rounds, status="pending", rounds=[])
+        d = Debate(claim=claim, max_rounds=max_rounds, status=DebateStatus.pending, rounds=[])
         self.session.add(d)
         await self.session.flush()
         await self.session.commit()
@@ -72,7 +72,7 @@ class DebateRepo:
         d.confidence = confidence
         d.rounds = rounds
         d.transcript_md = transcript_md
-        d.status = "done"
+        d.status = DebateStatus.done
         d.updated_at = datetime.utcnow()
         await self.session.commit()
 

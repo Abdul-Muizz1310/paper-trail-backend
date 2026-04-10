@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from paper_trail.api.deps import get_service
 from paper_trail.core.platform_auth import verify_platform_token
-from paper_trail.schemas.debates import PlatformDebateIn, PlatformDebateOut
+from paper_trail.schemas.debates import (
+    PlatformDebateIn,
+    PlatformDebateOut,
+    coerce_verdict,
+)
 from paper_trail.services.debates import DebateService
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -47,7 +51,7 @@ async def platform_debate(
     return PlatformDebateOut(
         debate_id=debate_id,
         transcript_url=f"/debates/{debate_id}/transcript.md",
-        verdict=debate.verdict or "INCONCLUSIVE",
+        verdict=coerce_verdict(debate.verdict) or "INCONCLUSIVE",
         confidence=float(debate.confidence or 0.0),
         rounds_run=len(list(debate.rounds or [])),
     )

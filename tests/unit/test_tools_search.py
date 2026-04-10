@@ -52,3 +52,19 @@ async def test_search_server_error_raises() -> None:
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(500))
     with pytest.raises(ToolError):
         await search("bad")
+
+
+async def test_search_empty_query_raises_value_error() -> None:
+    """Cover search.py:27 — empty query guard."""
+    with pytest.raises(ValueError, match="non-empty"):
+        await search("")
+    with pytest.raises(ValueError, match="non-empty"):
+        await search("   ")
+
+
+@respx.mock
+async def test_search_http_error_raises_tool_error() -> None:
+    """Cover search.py:37-39 — httpx.HTTPError → ToolError."""
+    respx.post(TAVILY_URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(ToolError, match="tavily_http_error"):
+        await search("test query")

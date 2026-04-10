@@ -5,6 +5,33 @@ from __future__ import annotations
 from paper_trail.agents.nodes import skeptic as mod
 
 
+async def test_skeptic_with_sub_questions_and_prior_rounds(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Cover skeptic.py:32 (sub_questions) and :38 (prior rounds)."""
+
+    async def fake_chat(messages, **kw):  # type: ignore[no-untyped-def]
+        return "rebuttal with context"
+
+    monkeypatch.setattr(mod, "chat", fake_chat)
+    out = await mod.skeptic(
+        {
+            "claim": "c",
+            "max_rounds": 3,
+            "round": 1,
+            "rounds": [
+                {"side": "proponent", "round": 1, "argument": "prev-p", "evidence": []},
+            ],
+            "plan": {
+                "sub_questions": ["Is this true?"],
+                "search_queries": [],
+                "evidence": [{"title": "T", "url": "https://x", "snippet": "s"}],
+            },
+        }
+    )
+    assert len(out["rounds"]) == 1
+    assert out["rounds"][0]["round"] == 2
+    assert out["rounds"][0]["side"] == "skeptic"
+
+
 async def test_skeptic_returns_single_round(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     async def fake_chat(messages, **kw):  # type: ignore[no-untyped-def]
         return "the claim is false because"

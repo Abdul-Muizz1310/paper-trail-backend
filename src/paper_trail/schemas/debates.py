@@ -9,6 +9,21 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 Verdict = Literal["TRUE", "FALSE", "INCONCLUSIVE"]
+_VERDICT_VALUES: frozenset[str] = frozenset({"TRUE", "FALSE", "INCONCLUSIVE"})
+
+
+def coerce_verdict(value: str | None) -> Verdict | None:
+    """Narrow a DB-layer string into the Verdict literal.
+
+    Until the DB column is migrated to a SQL enum (Phase 3), the model
+    stores `verdict` as a plain string. This helper enforces the Literal
+    contract at the HTTP boundary — parse, don't validate.
+    """
+    if value is None:
+        return None
+    if value not in _VERDICT_VALUES:
+        raise ValueError(f"invalid verdict: {value!r}")
+    return value  # type: ignore[return-value]
 
 
 class DebateCreateIn(BaseModel):

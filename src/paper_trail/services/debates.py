@@ -9,17 +9,19 @@ from paper_trail.agents import graph as graph_mod
 from paper_trail.agents.state import initial_state
 from paper_trail.core.config import settings
 from paper_trail.core.langfuse import span, update_current_trace
+from paper_trail.models.debate import Debate, DebateStatus
+from paper_trail.repositories.debates import DebateRepo
 
 
 class DebateService:
-    def __init__(self, repo: Any) -> None:
+    def __init__(self, repo: DebateRepo) -> None:
         self.repo = repo
 
     async def create(self, claim: str, max_rounds: int) -> UUID:
         debate = await self.repo.create(claim, max_rounds)
-        return debate.id  # type: ignore[no-any-return]
+        return debate.id
 
-    async def run(self, debate_id: UUID) -> Any:
+    async def run(self, debate_id: UUID) -> Debate | None:
         debate = await self.repo.get(debate_id)
         if debate is None:
             raise ValueError(f"debate {debate_id} not found")
@@ -52,7 +54,7 @@ class DebateService:
                 metadata=trace_metadata,
                 session_id=str(debate_id),
             )
-            await self.repo.set_status(debate_id, "running")
+            await self.repo.set_status(debate_id, DebateStatus.running)
             state = initial_state(debate.claim, debate.max_rounds)
             graph = graph_mod.build_graph()
 
@@ -107,7 +109,7 @@ class DebateService:
                                 confidence=result.get("confidence"),
                             )
             except Exception as exc:
-                await self.repo.set_status(debate_id, "error")
+                await self.repo.set_status(debate_id, DebateStatus.error)
                 update_current_trace(
                     output={"error": f"{type(exc).__name__}: {exc}"},
                     tags=[*tags, "status:error"],
@@ -139,8 +141,10 @@ class DebateService:
 
         return await self.repo.get(debate_id)
 
-    async def get(self, debate_id: UUID) -> Any:
+    async def get(self, debate_id: UUID) -> Debate | None:
         return await self.repo.get(debate_id)
 
-    async def list(self, cursor: str | None, limit: int = 50) -> tuple[list[Any], str | None]:
-        return await self.repo.list_page(cursor, limit)  # type: ignore[no-any-return]
+    async def list(
+        self, cursor: str | None, limit: int = 50
+    ) -> tuple[list[Debate], str | None]:
+        return await self.repo.list_page(cursor, limit)

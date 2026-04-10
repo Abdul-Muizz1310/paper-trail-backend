@@ -35,9 +35,30 @@ async def test_fetch_404_raises() -> None:
 
 
 @respx.mock
+async def test_fetch_http_error_raises_tool_error() -> None:
+    """Cover fetch.py:24-25 — httpx.HTTPError → ToolError."""
+    respx.get("https://example.com/boom").mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(ToolError, match="fetch_http_error"):
+        await fetch("https://example.com/boom")
+
+
+@respx.mock
 async def test_fetch_empty_body_raises() -> None:
     respx.get("https://example.com/empty").mock(
         return_value=httpx.Response(200, text="", headers={"content-type": "text/html"})
     )
     with pytest.raises(ToolError):
         await fetch("https://example.com/empty")
+
+
+@respx.mock
+async def test_fetch_empty_extraction_raises_tool_error(monkeypatch) -> None:
+    """Cover fetch.py:33 — trafilatura extracts nothing → ToolError."""
+    import paper_trail.agents.tools.fetch as fetch_mod
+
+    respx.get("https://example.com/junk").mock(
+        return_value=httpx.Response(200, text="<html><body>junk</body></html>")
+    )
+    monkeypatch.setattr(fetch_mod.trafilatura, "extract", lambda html: None)
+    with pytest.raises(ToolError, match="fetch_empty_extraction"):
+        await fetch("https://example.com/junk")

@@ -13,11 +13,13 @@ from fastapi.responses import PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
 from paper_trail.api.deps import get_service
+from paper_trail.models.debate import Debate
 from paper_trail.schemas.debates import (
     DebateCreateIn,
     DebateCreateOut,
     DebateListOut,
     DebateOut,
+    coerce_verdict,
 )
 from paper_trail.services.debates import DebateService
 
@@ -31,12 +33,12 @@ STREAM_MAX_SECONDS: float = 120.0
 STREAM_KEEPALIVE_SECONDS: float = 10.0
 
 
-def _to_debate_out(d: Any) -> DebateOut:
+def _to_debate_out(d: Debate) -> DebateOut:
     return DebateOut(
         id=d.id,
         claim=d.claim,
         status=d.status,
-        verdict=d.verdict,
+        verdict=coerce_verdict(d.verdict),
         confidence=d.confidence,
         rounds=list(d.rounds or []),
         transcript_md=d.transcript_md,

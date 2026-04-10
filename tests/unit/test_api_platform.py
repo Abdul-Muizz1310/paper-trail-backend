@@ -138,3 +138,25 @@ async def test_platform_transcript_url_shape(fake_service, monkeypatch) -> None:
         )
     body = r.json()
     assert body["transcript_url"] == f"/debates/{body['debate_id']}/transcript.md"
+
+
+async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatch) -> None:
+    """Cover platform.py:49 — debate is None after run → 500."""
+    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+
+    # Override get() to return None after run (simulating disappearance)
+    original_get = fake_service.get
+
+    async def vanishing_get(debate_id: UUID) -> Any:
+        return None  # always return None
+
+    fake_service.get = vanishing_get  # type: ignore[assignment]
+
+    async with await _client() as c:
+        r = await c.post(
+            "/platform/debate",
+            json={"claim": "x"},
+            headers={"Authorization": "Bearer demo"},
+        )
+    assert r.status_code == 500
+    assert "disappeared" in r.json()["detail"]
