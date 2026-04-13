@@ -141,7 +141,11 @@ async def test_run_skips_non_dict_graph_updates(monkeypatch) -> None:  # type: i
         async def astream(self, state, stream_mode="updates"):  # type: ignore[no-untyped-def]
             # Some LangGraph internals emit string or None updates
             yield {"__start__": "not-a-dict"}
-            yield {"proponent": {"rounds": [{"side": "proponent", "round": 1, "argument": "a", "evidence": []}]}}
+            yield {
+                "proponent": {
+                    "rounds": [{"side": "proponent", "round": 1, "argument": "a", "evidence": []}]
+                }
+            }
             yield {"judge": {"verdict": "TRUE", "confidence": 0.9, "need_more": False, "round": 1}}
             yield {"render": {"transcript_md": "# T"}}
 
