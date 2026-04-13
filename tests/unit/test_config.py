@@ -15,6 +15,6 @@ def test_cors_origins_list_parses_and_strips() -> None:
     assert s.cors_origins_list == ["a", "b", "c"]
 
 
-def test_demo_mode_defaults_true() -> None:
+def test_demo_mode_defaults_false() -> None:
     s = Settings()
-    assert s.demo_mode is True
+    assert s.demo_mode is False
