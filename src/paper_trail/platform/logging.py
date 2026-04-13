@@ -15,7 +15,7 @@ SERVICE_NAME = "paper_trail"
 
 def configure_logging() -> None:
     """Set up structlog with JSON (prod) or pretty (dev) rendering."""
-    is_prod = os.environ.get("ENVIRONMENT", "development") == "production"
+    is_prod = os.environ.get("APP_ENV", "development") == "production"
 
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,

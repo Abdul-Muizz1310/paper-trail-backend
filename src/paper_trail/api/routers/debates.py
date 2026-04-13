@@ -57,11 +57,22 @@ async def create_debate(
     service: Annotated[DebateService, Depends(get_service)],
 ) -> DebateCreateOut:
     debate_id = await service.create(body.claim, body.max_rounds)
-    background.add_task(service.run, debate_id)
+    background.add_task(_run_debate_background, debate_id)
     return DebateCreateOut(
         debate_id=debate_id,
         stream_url=f"/debates/{debate_id}/stream",
     )
+
+
+async def _run_debate_background(debate_id: UUID) -> None:
+    """Run the debate graph in a fresh session (not the request-scoped one)."""
+    from paper_trail.core.db import session_scope
+    from paper_trail.repositories.debates import DebateRepo
+
+    async with session_scope() as session:
+        repo = DebateRepo(session)
+        svc = DebateService(repo)
+        await svc.run(debate_id)
 
 
 @router.get("", response_model=DebateListOut)

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "info"
     port: int = 8000
-    demo_mode: bool = True
+    demo_mode: bool = False
     cors_origins: str = ""
 
     # Database

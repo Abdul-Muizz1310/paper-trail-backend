@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from paper_trail.agents.nodes import judge as judge_mod
 from paper_trail.agents.nodes import plan as plan_mod
@@ -34,16 +35,18 @@ async def _render_node(state: DebateState) -> dict[str, Any]:
     return await render_mod.render(state)
 
 
-def _route_after_plan(state: DebateState) -> list[str]:
-    return ["proponent", "skeptic"]
+def _route_after_plan(state: DebateState) -> list[Send]:
+    """Fan out to proponent and skeptic in parallel via Send."""
+    return [Send("proponent", state), Send("skeptic", state)]
 
 
-def _route_after_judge(state: DebateState) -> list[str]:
+def _route_after_judge(state: DebateState) -> list[Send] | str:
+    """Loop back to proponent+skeptic or proceed to render."""
     from paper_trail.agents.state import is_converged
 
     if is_converged(state) or not state.get("need_more"):
-        return ["render"]
-    return ["proponent", "skeptic"]
+        return "render"
+    return [Send("proponent", state), Send("skeptic", state)]
 
 
 def build_graph() -> Any:
@@ -61,21 +64,13 @@ def build_graph() -> Any:
     g.add_node("render", _render_node)
 
     g.add_edge(START, "plan")
-    g.add_conditional_edges(
-        "plan",
-        _route_after_plan,
-        {"proponent": "proponent", "skeptic": "skeptic"},
-    )
+    g.add_conditional_edges("plan", _route_after_plan, ["proponent", "skeptic"])
     g.add_edge("proponent", "judge")
     g.add_edge("skeptic", "judge")
     g.add_conditional_edges(
         "judge",
         _route_after_judge,
-        {
-            "proponent": "proponent",
-            "skeptic": "skeptic",
-            "render": "render",
-        },
+        ["proponent", "skeptic", "render"],
     )
     g.add_edge("render", END)
     return g.compile()

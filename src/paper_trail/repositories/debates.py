@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -32,7 +32,6 @@ class DebateRepo:
         d = Debate(claim=claim, max_rounds=max_rounds, status=DebateStatus.pending, rounds=[])
         self.session.add(d)
         await self.session.flush()
-        await self.session.commit()
         await self.session.refresh(d)
         return d
 
@@ -45,8 +44,10 @@ class DebateRepo:
     ) -> tuple[list[Debate], str | None]:
         stmt = select(Debate).order_by(desc(Debate.created_at), desc(Debate.id))
         if cursor:
-            ts, _did = _decode_cursor(cursor)
-            stmt = stmt.where(Debate.created_at < ts)
+            ts, cursor_id = _decode_cursor(cursor)
+            stmt = stmt.where(
+                (Debate.created_at < ts) | ((Debate.created_at == ts) & (Debate.id < cursor_id))
+            )
         stmt = stmt.limit(limit + 1)
         result = await self.session.execute(stmt)
         rows = list(result.scalars().all())
@@ -73,16 +74,14 @@ class DebateRepo:
         d.rounds = rounds
         d.transcript_md = transcript_md
         d.status = DebateStatus.done
-        d.updated_at = datetime.utcnow()
-        await self.session.commit()
+        d.updated_at = datetime.now(UTC)
 
     async def set_status(self, debate_id: UUID, status: str) -> None:
         d = await self.get(debate_id)
         if d is None:
             raise ValueError(f"debate {debate_id} not found")
         d.status = status
-        d.updated_at = datetime.utcnow()
-        await self.session.commit()
+        d.updated_at = datetime.now(UTC)
 
     async def update_judge_progress(
         self,
@@ -98,8 +97,7 @@ class DebateRepo:
             d.verdict = verdict
         if confidence is not None:
             d.confidence = float(confidence)
-        d.updated_at = datetime.utcnow()
-        await self.session.commit()
+        d.updated_at = datetime.now(UTC)
 
     async def update_rounds(self, debate_id: UUID, rounds: list[dict[str, Any]]) -> None:
         """Incrementally persist round progress while the graph runs.
@@ -111,5 +109,4 @@ class DebateRepo:
         if d is None:
             raise ValueError(f"debate {debate_id} not found")
         d.rounds = rounds
-        d.updated_at = datetime.utcnow()
-        await self.session.commit()
+        d.updated_at = datetime.now(UTC)

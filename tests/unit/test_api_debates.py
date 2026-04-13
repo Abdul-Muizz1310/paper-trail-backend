@@ -70,11 +70,15 @@ def fake_service() -> FakeDebateService:
 
 
 @pytest.fixture
-def client_with_fake(fake_service: FakeDebateService):
+def client_with_fake(fake_service: FakeDebateService, monkeypatch: pytest.MonkeyPatch):
     async def _override():
         yield fake_service
 
+    async def _fake_background(debate_id: UUID) -> None:
+        await fake_service.run(debate_id)
+
     app.dependency_overrides[deps.get_service] = _override
+    monkeypatch.setattr(debates_router_mod, "_run_debate_background", _fake_background)
     yield fake_service
     app.dependency_overrides.clear()
 
