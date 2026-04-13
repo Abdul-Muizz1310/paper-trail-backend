@@ -132,6 +132,28 @@ async def test_run_unknown_raises() -> None:
         await svc.run(uuid4())
 
 
+async def test_run_skips_non_dict_graph_updates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Cover debates.py:81 — non-dict update values are silently skipped."""
+    repo = FakeRepo()
+    svc = DebateService(repo)
+
+    class MixedGraph:
+        async def astream(self, state, stream_mode="updates"):  # type: ignore[no-untyped-def]
+            # Some LangGraph internals emit string or None updates
+            yield {"__start__": "not-a-dict"}
+            yield {"proponent": {"rounds": [{"side": "proponent", "round": 1, "argument": "a", "evidence": []}]}}
+            yield {"judge": {"verdict": "TRUE", "confidence": 0.9, "need_more": False, "round": 1}}
+            yield {"render": {"transcript_md": "# T"}}
+
+    from paper_trail.agents import graph as graph_mod
+
+    monkeypatch.setattr(graph_mod, "build_graph", lambda: MixedGraph())
+    did = await svc.create("sky is blue", 3)
+    result = await svc.run(did)
+    assert result.verdict == "TRUE"
+    assert result.status == "done"
+
+
 async def test_run_graph_error_sets_error_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     repo = FakeRepo()
     svc = DebateService(repo)

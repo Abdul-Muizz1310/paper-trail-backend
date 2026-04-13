@@ -43,6 +43,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-pyyaml>=6.0",
+    "aiosqlite>=0.22.1",
 ]
 
 [build-system]
@@ -93,7 +94,3 @@ markers = [
     "integration: requires Testcontainers / real Postgres",
 ]
 
-[dependency-groups]
-dev = [
-    "aiosqlite>=0.22.1",
-]

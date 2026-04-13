@@ -140,6 +140,31 @@ async def test_platform_transcript_url_shape(fake_service, monkeypatch) -> None:
     assert body["transcript_url"] == f"/debates/{body['debate_id']}/transcript.md"
 
 
+async def test_platform_malformed_bearer_401(fake_service, monkeypatch) -> None:
+    """Cover platform.py:28 — malformed Authorization header."""
+    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+    async with await _client() as c:
+        # "Basic" scheme instead of "Bearer"
+        r = await c.post(
+            "/platform/debate",
+            json={"claim": "x"},
+            headers={"Authorization": "Basic abc"},
+        )
+    assert r.status_code == 401
+
+
+async def test_platform_empty_bearer_token_401(fake_service, monkeypatch) -> None:
+    """Cover platform.py:28 — Bearer with empty token."""
+    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+    async with await _client() as c:
+        r = await c.post(
+            "/platform/debate",
+            json={"claim": "x"},
+            headers={"Authorization": "Bearer   "},
+        )
+    assert r.status_code == 401
+
+
 async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatch) -> None:
     """Cover platform.py:49 — debate is None after run → 500."""
     monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
