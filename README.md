@@ -11,7 +11,7 @@
 ![neon](https://img.shields.io/badge/Neon-Postgres-00e599?style=flat-square&logo=postgresql&logoColor=white)
 ![langfuse](https://img.shields.io/badge/LangFuse-v3-f9a825?style=flat-square)
 [![ci](https://github.com/Abdul-Muizz1310/paper-trail-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Abdul-Muizz1310/paper-trail-backend/actions/workflows/ci.yml)
-![coverage](https://img.shields.io/badge/coverage-88%25-yellow?style=flat-square)
+![coverage](https://img.shields.io/badge/coverage-100%25-brightgreen?style=flat-square)
 ![eval](https://img.shields.io/badge/eval-84%25%20(21%2F25)-brightgreen?style=flat-square)
 ![mypy](https://img.shields.io/badge/mypy-strict-blue?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
@@ -249,21 +249,10 @@ uv run pytest --cov=src/paper_trail --cov-report=term-missing
 
 | Metric | Value |
 |---|---|
-| **Test count** | 101 unit tests |
-| **Coverage** | **88%** (target: 100% — see roadmap) |
+| **Test count** | 192 tests |
+| **Line coverage** | **100%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fully mocked — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes. No real LLM / Tavily / LangFuse calls in CI. |
-
-### 🎯 Roadmap to 100% coverage
-
-| Module | Current | Gap |
-|---|---|---|
-| `agents/nodes/_format.py` | 24% | `format_evidence()`, `format_prior_rounds()` untested |
-| `repositories/debates.py` | 78% | not-found + cursor edge paths |
-| `agents/nodes/render.py`  | 78% | evidence markdown + reasoning section |
-| `core/llm.py`             | 84% | timeout / HTTP error / bad-JSON / fallback |
-| `core/langfuse.py`        | 88% | client init failure, span-exit errors |
-| `api/routers/debates.py`  | 93% | SSE stream error paths |
 
 ---
 
