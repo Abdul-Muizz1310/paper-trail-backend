@@ -45,8 +45,7 @@ async def skeptic(state: DebateState) -> dict[str, Any]:
             )
         if pool:
             user_parts.append(
-                "## Preferred evidence pool (cite with [cert:<id>])\n"
-                + format_evidence_pool(pool)
+                "## Preferred evidence pool (cite with [cert:<id>])\n" + format_evidence_pool(pool)
             )
         user_parts.append("## Evidence\n" + format_evidence(evidence))
         prior = format_prior_rounds(state.get("rounds", []))

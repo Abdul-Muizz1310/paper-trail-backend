@@ -49,8 +49,7 @@ async def proponent(state: DebateState) -> dict[str, Any]:
             # `[cert:<uuid>]` marker — the exact syntax the LLM must emit
             # to cite it.
             user_parts.append(
-                "## Preferred evidence pool (cite with [cert:<id>])\n"
-                + format_evidence_pool(pool)
+                "## Preferred evidence pool (cite with [cert:<id>])\n" + format_evidence_pool(pool)
             )
         user_parts.append("## Evidence\n" + format_evidence(evidence))
         prior = format_prior_rounds(state.get("rounds", []))

@@ -378,9 +378,7 @@ async def test_transcript_json_includes_citations_when_used(client_with_fake) ->
             "side": "proponent",
             "round": 1,
             "argument_md": "cite [cert:abc]",
-            "citations": [
-                {"type": "cert", "ref": "abc-uuid-like", "title": "Src"}
-            ],
+            "citations": [{"type": "cert", "ref": "abc-uuid-like", "title": "Src"}],
         }
     ]
     client_with_fake._status_sequence = []
@@ -389,9 +387,7 @@ async def test_transcript_json_includes_citations_when_used(client_with_fake) ->
     assert r.status_code == 200
     body = r.json()
     rounds = body["rounds"]
-    assert rounds[0]["citations"] == [
-        {"type": "cert", "ref": "abc-uuid-like", "title": "Src"}
-    ]
+    assert rounds[0]["citations"] == [{"type": "cert", "ref": "abc-uuid-like", "title": "Src"}]
 
 
 async def test_transcript_json_409_when_running(client_with_fake) -> None:
@@ -443,9 +439,7 @@ async def test_transcript_json_falls_back_to_rounds_when_no_rounds_struct(
     d = client_with_fake.store[did]
     d.status = "done"
     d.rounds_struct = None
-    d.rounds = [
-        {"side": "proponent", "round": 1, "argument": "a", "evidence": [], "citations": []}
-    ]
+    d.rounds = [{"side": "proponent", "round": 1, "argument": "a", "evidence": [], "citations": []}]
     d.transcript_hash = None  # force in-endpoint computation
     client_with_fake._status_sequence = []
     async with await _make_client() as c:
@@ -492,9 +486,7 @@ async def test_transcript_json_coerces_non_int_round(client_with_fake) -> None:
     did = await client_with_fake.create("hi", 3)
     d = client_with_fake.store[did]
     d.status = "done"
-    d.rounds_struct = [
-        {"side": "proponent", "round": "not-int", "argument_md": "a"}
-    ]
+    d.rounds_struct = [{"side": "proponent", "round": "not-int", "argument_md": "a"}]
     client_with_fake._status_sequence = []
     async with await _make_client() as c:
         r = await c.get(f"/debates/{did}/transcript.json")
