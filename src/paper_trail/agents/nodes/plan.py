@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from paper_trail.agents.nodes._format import format_evidence_pool
 from paper_trail.agents.state import DebateState
 from paper_trail.agents.tools.search import search
 from paper_trail.core.langfuse import span, update_current_span
@@ -21,12 +22,32 @@ class PlanSchema(BaseModel):
 async def plan(state: DebateState) -> dict[str, Any]:
     """Decompose a claim into sub-questions and seed evidence via search."""
     claim = state.get("claim", "")
-    async with span("node.plan", input={"claim": claim}):
+    pool = state.get("evidence_pool") or []
+    async with span(
+        "node.plan",
+        input={"claim": claim, "pool_size": len(pool)},
+    ):
         system = load("plan")
+        # When the caller provides pre-collected evidence, nudge the planner
+        # to prefer it over fresh Tavily searches for its sub-questions.
+        # When absent, preserve the exact wording of the original user
+        # message so existing debates behave identically.
+        if pool:
+            pool_block = format_evidence_pool(pool)
+            user_msg = (
+                f"Decompose this claim: {claim}\n\n"
+                "Draft sub-questions that can be answered from the "
+                "following pre-collected evidence pool. Only emit a "
+                "`search_queries` entry for sub-questions the pool cannot "
+                "answer.\n\n"
+                f"## Evidence pool\n{pool_block}"
+            )
+        else:
+            user_msg = f"Decompose this claim: {claim}"
         result = await chat_json(
             [
                 {"role": "system", "content": system},
-                {"role": "user", "content": f"Decompose this claim: {claim}"},
+                {"role": "user", "content": user_msg},
             ],
             PlanSchema,
         )

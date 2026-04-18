@@ -82,6 +82,21 @@ class TestValidateState:
             validate_state({"verdict": "MAYBE"})  # type: ignore[typeddict-item]
 
 
+class TestInitialStateEvidencePool:
+    def test_pool_none_by_default(self) -> None:
+        s = initial_state("c", 3)
+        assert s["evidence_pool"] is None
+
+    def test_pool_empty_list_normalized_to_none(self) -> None:
+        s = initial_state("c", 3, evidence_pool=[])
+        assert s["evidence_pool"] is None
+
+    def test_pool_with_items_preserved(self) -> None:
+        pool = [{"certificate_id": "uid", "url": "u", "title": "t", "text": "b"}]
+        s = initial_state("c", 3, evidence_pool=pool)
+        assert s["evidence_pool"] == pool
+
+
 def test_rounds_reducer_appends() -> None:
     """The reducer on rounds is operator.add which concatenates lists."""
     a = [{"side": "proponent", "round": 1, "argument": "x", "evidence": []}]

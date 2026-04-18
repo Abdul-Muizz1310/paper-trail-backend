@@ -12,6 +12,44 @@ from typing import Any
 
 _MAX_SNIPPET_CHARS = 240
 _MAX_EVIDENCE_ITEMS = 10
+# Pool items can carry full text bodies (vs evidence hits' snippets), so
+# trim a little harder when formatting into LLM context.
+_MAX_POOL_TEXT_CHARS = 400
+_MAX_POOL_ITEMS = 50
+
+
+def format_evidence_pool(pool: Iterable[dict[str, Any]] | None) -> str:
+    """Render the caller-supplied evidence pool for LLM context.
+
+    Each item is keyed by its `[cert:<uuid>]` marker so the LLM has an
+    unambiguous way to cite it. Items with a missing/invalid
+    `certificate_id` are skipped.
+    """
+    if not pool:
+        return ""
+    items = list(pool)
+    lines: list[str] = []
+    for item in items[:_MAX_POOL_ITEMS]:
+        if not isinstance(item, dict):
+            continue
+        cid = item.get("certificate_id")
+        if not cid:
+            continue
+        title = str(item.get("title") or "(untitled)").strip()
+        url = str(item.get("url") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if len(text) > _MAX_POOL_TEXT_CHARS:
+            text = text[:_MAX_POOL_TEXT_CHARS].rstrip() + "…"
+        header = f"- [cert:{cid}] **{title}**"
+        if url:
+            header += f" — {url}"
+        lines.append(header)
+        if text:
+            lines.append(f"   {text}")
+    remaining = len(items) - _MAX_POOL_ITEMS
+    if remaining > 0:
+        lines.append(f"_({remaining} more pool item(s) omitted)_")
+    return "\n".join(lines)
 
 
 def format_evidence(evidence: Iterable[dict[str, Any]] | None) -> str:

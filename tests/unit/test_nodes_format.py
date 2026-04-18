@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from paper_trail.agents.nodes._format import (
     _MAX_EVIDENCE_ITEMS,
+    _MAX_POOL_ITEMS,
+    _MAX_POOL_TEXT_CHARS,
     _MAX_SNIPPET_CHARS,
     format_evidence,
+    format_evidence_pool,
     format_prior_rounds,
 )
 
@@ -238,3 +241,90 @@ def test_format_prior_rounds_all_non_dict_returns_empty_string() -> None:
     rounds = ["bad", 1, None]
     out = format_prior_rounds(rounds)  # type: ignore[arg-type]
     assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# format_evidence_pool — Block 6 (Spec 08)
+# ---------------------------------------------------------------------------
+
+
+def test_format_evidence_pool_none_returns_empty_string() -> None:
+    assert format_evidence_pool(None) == ""
+
+
+def test_format_evidence_pool_empty_list_returns_empty_string() -> None:
+    assert format_evidence_pool([]) == ""
+
+
+def test_format_evidence_pool_single_item_renders_with_cert_marker() -> None:
+    pool = [
+        {
+            "certificate_id": "abc-123",
+            "url": "https://p",
+            "title": "Pool",
+            "text": "body",
+        }
+    ]
+    out = format_evidence_pool(pool)
+    assert "[cert:abc-123]" in out
+    assert "**Pool**" in out
+    assert "https://p" in out
+    assert "body" in out
+
+
+def test_format_evidence_pool_missing_cert_id_skipped() -> None:
+    pool = [
+        {"url": "u", "title": "noid", "text": "t"},
+        {"certificate_id": "cid", "url": "u2", "title": "keep", "text": "t2"},
+    ]
+    out = format_evidence_pool(pool)
+    assert "noid" not in out
+    assert "keep" in out
+
+
+def test_format_evidence_pool_truncates_long_text() -> None:
+    long_text = "y" * (_MAX_POOL_TEXT_CHARS + 50)
+    pool = [
+        {
+            "certificate_id": "cid",
+            "url": "u",
+            "title": "t",
+            "text": long_text,
+        }
+    ]
+    out = format_evidence_pool(pool)
+    assert "…" in out
+
+
+def test_format_evidence_pool_missing_url_omits_dash() -> None:
+    pool = [{"certificate_id": "cid", "title": "t", "text": "body"}]
+    out = format_evidence_pool(pool)
+    assert "[cert:cid]" in out
+    assert " — " not in out
+
+
+def test_format_evidence_pool_missing_text_omits_body() -> None:
+    pool = [{"certificate_id": "cid", "url": "u", "title": "t"}]
+    out = format_evidence_pool(pool)
+    lines = out.splitlines()
+    # only the header line, no indented body line
+    assert len(lines) == 1
+
+
+def test_format_evidence_pool_truncates_to_max_items_with_remainder() -> None:
+    pool = [
+        {"certificate_id": f"cid{i}", "url": f"u{i}", "title": f"t{i}", "text": "b"}
+        for i in range(_MAX_POOL_ITEMS + 3)
+    ]
+    out = format_evidence_pool(pool)
+    assert "(3 more pool item(s) omitted)" in out
+
+
+def test_format_evidence_pool_non_dict_items_skipped() -> None:
+    pool = [
+        "not a dict",  # type: ignore[list-item]
+        {"certificate_id": "cid", "url": "u", "title": "ok", "text": "b"},
+    ]
+    out = format_evidence_pool(pool)  # type: ignore[arg-type]
+    assert "not a dict" not in out
+    assert "**ok**" in out

@@ -226,3 +226,128 @@ async def test_render_verdict_and_confidence_always_present() -> None:
     assert "## Verdict" in md
     assert "- Verdict: **None**" in md
     assert "- Confidence: None" in md
+
+
+# ---------------------------------------------------------------------------
+# Block 6 (Spec 08) — rounds_struct + transcript_hash
+# ---------------------------------------------------------------------------
+
+
+async def test_render_emits_rounds_struct_and_hash() -> None:
+    state = {
+        "claim": "c",
+        "max_rounds": 1,
+        "round": 1,
+        "rounds": [
+            {
+                "side": "proponent",
+                "round": 1,
+                "argument": "argue",
+                "evidence": [],
+                "citations": [{"type": "url", "ref": "https://u", "title": "T"}],
+            }
+        ],
+        "verdict": "TRUE",
+        "confidence": 0.9,
+    }
+    out = await render(state)
+    assert "transcript_md" in out
+    assert "rounds_struct" in out
+    assert "transcript_hash" in out
+    rs = out["rounds_struct"]
+    assert len(rs) == 1
+    assert rs[0]["side"] == "proponent"
+    assert rs[0]["argument_md"] == "argue"
+    assert rs[0]["citations"] == [{"type": "url", "ref": "https://u", "title": "T"}]
+    assert len(out["transcript_hash"]) == 64
+
+
+async def test_render_hash_deterministic_for_same_state() -> None:
+    """Case 21: transcript hash stable across re-renders of the same state."""
+    state = {
+        "claim": "c",
+        "max_rounds": 1,
+        "round": 1,
+        "rounds": [
+            {"side": "proponent", "round": 1, "argument": "a", "evidence": [], "citations": []},
+            {"side": "skeptic", "round": 1, "argument": "b", "evidence": [], "citations": []},
+        ],
+        "verdict": "TRUE",
+        "confidence": 0.9,
+    }
+    a = await render(state)
+    b = await render(state)
+    assert a["transcript_hash"] == b["transcript_hash"]
+
+
+async def test_render_rounds_struct_order_is_stable() -> None:
+    # Feed skeptic first — output must still be proponent then skeptic.
+    state = {
+        "claim": "c",
+        "max_rounds": 1,
+        "round": 1,
+        "rounds": [
+            {"side": "skeptic", "round": 1, "argument": "s", "evidence": [], "citations": []},
+            {"side": "proponent", "round": 1, "argument": "p", "evidence": [], "citations": []},
+        ],
+        "verdict": "TRUE",
+        "confidence": 0.9,
+    }
+    out = await render(state)
+    rs = out["rounds_struct"]
+    assert [r["side"] for r in rs] == ["proponent", "skeptic"]
+
+
+async def test_render_hash_differs_when_claim_differs() -> None:
+    base = {
+        "max_rounds": 1,
+        "round": 1,
+        "rounds": [],
+        "verdict": "TRUE",
+        "confidence": 0.9,
+    }
+    a = await render({**base, "claim": "c1"})
+    b = await render({**base, "claim": "c2"})
+    assert a["transcript_hash"] != b["transcript_hash"]
+
+
+async def test_render_drops_malformed_citation_entries() -> None:
+    state = {
+        "claim": "c",
+        "max_rounds": 1,
+        "round": 1,
+        "rounds": [
+            {
+                "side": "proponent",
+                "round": 1,
+                "argument": "a",
+                "evidence": [],
+                "citations": [
+                    "not a dict",
+                    {"type": "cert"},  # missing ref
+                    {"type": "bogus", "ref": "x"},  # wrong type
+                    {"type": "url", "ref": "https://ok", "title": "OK"},
+                ],
+            }
+        ],
+        "verdict": "TRUE",
+        "confidence": 0.9,
+    }
+    out = await render(state)
+    cites = out["rounds_struct"][0]["citations"]
+    assert cites == [{"type": "url", "ref": "https://ok", "title": "OK"}]
+
+
+async def test_render_handles_none_verdict_in_hash() -> None:
+    """None verdict must still produce a valid 64-char hex hash."""
+    out = await render(
+        {
+            "claim": "c",
+            "max_rounds": 1,
+            "round": 0,
+            "rounds": [],
+            "verdict": None,
+            "confidence": None,
+        }
+    )
+    assert len(out["transcript_hash"]) == 64

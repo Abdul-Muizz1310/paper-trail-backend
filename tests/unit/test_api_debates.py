@@ -24,6 +24,10 @@ class FakeDebate:
         self.confidence: float | None = None
         self.rounds: list[dict[str, Any]] = []
         self.transcript_md: str | None = None
+        # Block 6 (Spec 08)
+        self.evidence_pool: list[dict[str, Any]] | None = None
+        self.rounds_struct: list[dict[str, Any]] | None = None
+        self.transcript_hash: str | None = None
         from datetime import datetime
 
         self.created_at = datetime.utcnow()
@@ -36,12 +40,35 @@ class FakeDebateService:
         self.run_event = asyncio.Event()
         self._status_sequence: list[str] = ["running", "running", "done"]
 
-    async def create(self, claim: str, max_rounds: int) -> UUID:
+    async def create(
+        self,
+        claim: str,
+        max_rounds: int,
+        evidence_pool: list[dict[str, Any]] | None = None,
+    ) -> UUID:
         d = FakeDebate(uuid4(), claim, max_rounds)
         d.verdict = "TRUE"
         d.confidence = 0.9
-        d.rounds = [{"side": "proponent", "round": 1, "argument": "a", "evidence": []}]
+        d.rounds = [
+            {
+                "side": "proponent",
+                "round": 1,
+                "argument": "a",
+                "evidence": [],
+                "citations": [],
+            }
+        ]
         d.transcript_md = "# transcript"
+        d.evidence_pool = evidence_pool if evidence_pool else None
+        d.rounds_struct = [
+            {
+                "side": "proponent",
+                "round": 1,
+                "argument_md": "a",
+                "citations": [],
+            }
+        ]
+        d.transcript_hash = "f" * 64
         self.store[d.id] = d
         return d.id
 
@@ -217,6 +244,262 @@ async def test_stream_keepalive_emits_ping(client_with_fake, monkeypatch) -> Non
                 break
     # After many polls with same snapshot, keepalive should fire
     assert seen_ping or seen_done  # at minimum one must happen
+
+
+# ---------------------------------------------------------------------------
+# Block 6 (Spec 08) — evidence pool + transcript.json
+# ---------------------------------------------------------------------------
+
+
+def _make_pool_item() -> dict[str, Any]:
+    return {
+        "certificate_id": str(uuid4()),
+        "url": "https://example.com",
+        "title": "Source",
+        "text": "authoritative content here",
+    }
+
+
+async def test_create_debate_without_pool_persists_null(client_with_fake) -> None:
+    """Case 1."""
+    async with await _make_client() as c:
+        r = await c.post("/debates", json={"claim": "hi", "max_rounds": 3})
+    assert r.status_code == 201
+    did = UUID(r.json()["debate_id"])
+    assert client_with_fake.store[did].evidence_pool is None
+
+
+async def test_create_debate_with_3_item_pool_persists(client_with_fake) -> None:
+    """Case 2."""
+    pool = [_make_pool_item() for _ in range(3)]
+    async with await _make_client() as c:
+        r = await c.post(
+            "/debates",
+            json={"claim": "hi", "max_rounds": 3, "evidence_pool": pool},
+        )
+    assert r.status_code == 201
+    did = UUID(r.json()["debate_id"])
+    persisted = client_with_fake.store[did].evidence_pool
+    assert persisted is not None
+    assert len(persisted) == 3
+    assert persisted[0]["certificate_id"] == pool[0]["certificate_id"]
+
+
+async def test_create_debate_with_empty_pool_persists_null(client_with_fake) -> None:
+    """Case 3."""
+    async with await _make_client() as c:
+        r = await c.post(
+            "/debates",
+            json={"claim": "hi", "max_rounds": 3, "evidence_pool": []},
+        )
+    assert r.status_code == 201
+    did = UUID(r.json()["debate_id"])
+    assert client_with_fake.store[did].evidence_pool is None
+
+
+async def test_create_debate_with_51_item_pool_rejected(client_with_fake) -> None:
+    """Case 9."""
+    pool = [_make_pool_item() for _ in range(51)]
+    async with await _make_client() as c:
+        r = await c.post(
+            "/debates",
+            json={"claim": "hi", "max_rounds": 3, "evidence_pool": pool},
+        )
+    assert r.status_code == 422
+
+
+async def test_create_debate_with_malformed_cert_id_rejected(client_with_fake) -> None:
+    """Case 10."""
+    bad_item = {
+        "certificate_id": "not-a-uuid",
+        "url": "u",
+        "title": "t",
+        "text": "body",
+    }
+    async with await _make_client() as c:
+        r = await c.post(
+            "/debates",
+            json={"claim": "hi", "max_rounds": 3, "evidence_pool": [bad_item]},
+        )
+    assert r.status_code == 422
+
+
+async def test_create_debate_with_pool_item_missing_text_rejected(client_with_fake) -> None:
+    """Case 11."""
+    bad_item = {
+        "certificate_id": str(uuid4()),
+        "url": "u",
+        "title": "t",
+        # missing `text`
+    }
+    async with await _make_client() as c:
+        r = await c.post(
+            "/debates",
+            json={"claim": "hi", "max_rounds": 3, "evidence_pool": [bad_item]},
+        )
+    assert r.status_code == 422
+
+
+async def test_transcript_json_happy(client_with_fake) -> None:
+    """Case 4."""
+    did = await client_with_fake.create("hi", 3)
+    client_with_fake.store[did].status = "done"
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["debate_id"] == str(did)
+    assert body["claim"] == "hi"
+    assert body["verdict"] == "TRUE"
+    assert body["confidence"] == 0.9
+    assert isinstance(body["rounds"], list)
+    assert len(body["transcript_hash"]) == 64
+
+
+async def test_transcript_json_hash_deterministic(client_with_fake) -> None:
+    """Case 5."""
+    did = await client_with_fake.create("hi", 3)
+    client_with_fake.store[did].status = "done"
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r1 = await c.get(f"/debates/{did}/transcript.json")
+        r2 = await c.get(f"/debates/{did}/transcript.json")
+    assert r1.json()["transcript_hash"] == r2.json()["transcript_hash"]
+
+
+async def test_transcript_json_includes_citations_when_used(client_with_fake) -> None:
+    """Case 6."""
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.rounds_struct = [
+        {
+            "side": "proponent",
+            "round": 1,
+            "argument_md": "cite [cert:abc]",
+            "citations": [
+                {"type": "cert", "ref": "abc-uuid-like", "title": "Src"}
+            ],
+        }
+    ]
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    body = r.json()
+    rounds = body["rounds"]
+    assert rounds[0]["citations"] == [
+        {"type": "cert", "ref": "abc-uuid-like", "title": "Src"}
+    ]
+
+
+async def test_transcript_json_409_when_running(client_with_fake) -> None:
+    """Case 7."""
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "running"
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 409
+    assert r.json()["detail"] == "Debate still running"
+
+
+async def test_transcript_json_409_when_pending(client_with_fake) -> None:
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "pending"
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 409
+
+
+async def test_transcript_json_404_when_unknown(client_with_fake) -> None:
+    """Case 8."""
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{uuid4()}/transcript.json")
+    assert r.status_code == 404
+
+
+async def test_transcript_json_500_when_verdict_missing(client_with_fake) -> None:
+    """Invariant: a 'done' debate without a verdict should 500, not mask."""
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.verdict = None
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 500
+
+
+async def test_transcript_json_falls_back_to_rounds_when_no_rounds_struct(
+    client_with_fake,
+) -> None:
+    """Older debates without rounds_struct must still yield a valid transcript."""
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.rounds_struct = None
+    d.rounds = [
+        {"side": "proponent", "round": 1, "argument": "a", "evidence": [], "citations": []}
+    ]
+    d.transcript_hash = None  # force in-endpoint computation
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["rounds"]) == 1
+    assert body["rounds"][0]["argument_md"] == "a"
+    assert len(body["transcript_hash"]) == 64
+
+
+async def test_transcript_json_handles_malformed_round_entries(client_with_fake) -> None:
+    """Non-dict / bogus round entries must be skipped, not crash."""
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.rounds_struct = [
+        "not a dict",  # skipped
+        {
+            "side": "unknown",  # falls back to proponent
+            "round": 0,  # below min — coerced to 1
+            "argument_md": "ok",
+            "citations": [
+                "not dict",
+                {"type": "cert"},  # missing ref
+                {"ref": "x"},  # missing type
+                {"type": "cert", "ref": "good", "title": "G"},
+            ],
+        },
+    ]
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["rounds"]) == 1
+    rnd = body["rounds"][0]
+    assert rnd["side"] == "proponent"
+    assert rnd["round"] == 1
+    assert rnd["citations"] == [{"type": "cert", "ref": "good", "title": "G"}]
+
+
+async def test_transcript_json_coerces_non_int_round(client_with_fake) -> None:
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.rounds_struct = [
+        {"side": "proponent", "round": "not-int", "argument_md": "a"}
+    ]
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    assert r.json()["rounds"][0]["round"] == 1
 
 
 async def test_stream_emits_state_and_done(client_with_fake, monkeypatch) -> None:

@@ -190,6 +190,80 @@ async def test_update_rounds_raises_when_missing(session) -> None:  # type: igno
         await repo.update_rounds(missing_id, [])
 
 
+# ---------------------------------------------------------------------------
+# Block 6 (Spec 08) — evidence pool + structured transcript round-trip
+# ---------------------------------------------------------------------------
+
+
+async def test_create_persists_evidence_pool(session) -> None:  # type: ignore[no-untyped-def]
+    repo = DebateRepo(session)
+    pool = [
+        {
+            "certificate_id": str(uuid4()),
+            "url": "https://x",
+            "title": "t",
+            "text": "body",
+        }
+    ]
+    d = await repo.create("c", 3, evidence_pool=pool)
+    got = await repo.get(d.id)
+    assert got is not None
+    assert got.evidence_pool is not None
+    assert len(got.evidence_pool) == 1
+    assert got.evidence_pool[0]["certificate_id"] == pool[0]["certificate_id"]
+
+
+async def test_create_empty_pool_persists_null(session) -> None:  # type: ignore[no-untyped-def]
+    repo = DebateRepo(session)
+    d = await repo.create("c", 3, evidence_pool=[])
+    got = await repo.get(d.id)
+    assert got is not None
+    assert got.evidence_pool is None
+
+
+async def test_create_no_pool_persists_null(session) -> None:  # type: ignore[no-untyped-def]
+    repo = DebateRepo(session)
+    d = await repo.create("c", 3)
+    got = await repo.get(d.id)
+    assert got is not None
+    assert got.evidence_pool is None
+
+
+async def test_update_result_persists_rounds_struct_and_hash(session) -> None:  # type: ignore[no-untyped-def]
+    repo = DebateRepo(session)
+    d = await repo.create("c", 3)
+    rs = [{"side": "proponent", "round": 1, "argument_md": "a", "citations": []}]
+    await repo.update_result(
+        d.id,
+        verdict="TRUE",
+        confidence=0.9,
+        rounds=[],
+        transcript_md="# T",
+        rounds_struct=rs,
+        transcript_hash="c" * 64,
+    )
+    got = await repo.get(d.id)
+    assert got is not None
+    assert got.rounds_struct == rs
+    assert got.transcript_hash == "c" * 64
+
+
+async def test_update_result_without_rounds_struct_leaves_null(session) -> None:  # type: ignore[no-untyped-def]
+    repo = DebateRepo(session)
+    d = await repo.create("c", 3)
+    await repo.update_result(
+        d.id,
+        verdict="TRUE",
+        confidence=0.9,
+        rounds=[],
+        transcript_md="# T",
+    )
+    got = await repo.get(d.id)
+    assert got is not None
+    assert got.rounds_struct is None
+    assert got.transcript_hash is None
+
+
 async def test_cursor_roundtrip_encode_decode() -> None:
     """Encoding then decoding a cursor yields the original values."""
     from datetime import datetime

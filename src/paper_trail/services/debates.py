@@ -17,8 +17,13 @@ class DebateService:
     def __init__(self, repo: DebateRepo) -> None:
         self.repo = repo
 
-    async def create(self, claim: str, max_rounds: int) -> UUID:
-        debate = await self.repo.create(claim, max_rounds)
+    async def create(
+        self,
+        claim: str,
+        max_rounds: int,
+        evidence_pool: list[dict[str, Any]] | None = None,
+    ) -> UUID:
+        debate = await self.repo.create(claim, max_rounds, evidence_pool=evidence_pool)
         return debate.id
 
     async def run(self, debate_id: UUID) -> Debate | None:
@@ -55,7 +60,14 @@ class DebateService:
                 session_id=str(debate_id),
             )
             await self.repo.set_status(debate_id, DebateStatus.running)
-            state = initial_state(debate.claim, debate.max_rounds)
+            # Block 6 (Spec 08): seed the caller-supplied pool into graph
+            # state so plan/proponent/skeptic nodes can prefer it over
+            # Tavily. Older debates (pool=None) behave identically.
+            pool_raw = getattr(debate, "evidence_pool", None)
+            pool: list[dict[str, Any]] | None = (
+                list(pool_raw) if isinstance(pool_raw, list) and pool_raw else None
+            )
+            state = initial_state(debate.claim, debate.max_rounds, evidence_pool=pool)
             graph = graph_mod.build_graph()
 
             # Stream node updates so rounds land in the DB as they're
@@ -94,6 +106,9 @@ class DebateService:
                             "round",
                             "need_more",
                             "plan",
+                            # Block 6: render now also emits these.
+                            "rounds_struct",
+                            "transcript_hash",
                         ):
                             if key in update:
                                 result[key] = update[key]
@@ -119,12 +134,22 @@ class DebateService:
             rounds = list(result.get("rounds") or [])
             transcript = str(result.get("transcript_md") or "")
 
+            rounds_struct_raw = result.get("rounds_struct")
+            rounds_struct: list[dict[str, Any]] | None = (
+                list(rounds_struct_raw) if isinstance(rounds_struct_raw, list) else None
+            )
+            transcript_hash_raw = result.get("transcript_hash")
+            transcript_hash: str | None = (
+                str(transcript_hash_raw) if isinstance(transcript_hash_raw, str) else None
+            )
             await self.repo.update_result(
                 debate_id,
                 verdict=verdict,
                 confidence=confidence,
                 rounds=rounds,
                 transcript_md=transcript,
+                rounds_struct=rounds_struct,
+                transcript_hash=transcript_hash,
             )
             update_current_trace(
                 output={

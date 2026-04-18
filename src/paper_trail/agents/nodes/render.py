@@ -1,15 +1,61 @@
-"""Render node — deterministic markdown transcript."""
+"""Render node — deterministic markdown transcript + structured rounds + hash."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from paper_trail.agents.state import DebateState
+from paper_trail.agents.tools.transcript import hash_transcript
 from paper_trail.core.langfuse import span, update_current_span
 
 
+def _build_rounds_struct(
+    rounds: list[Any],
+) -> list[dict[str, Any]]:
+    """Convert the state rounds into the structured transcript shape.
+
+    Output order is stable: sort by round ascending, then by side
+    (proponent < skeptic) so the rendered transcript is deterministic
+    regardless of the order LangGraph happened to emit the parallel
+    branches.
+    """
+    # Upstream guarantees every entry is a dict (proponent/skeptic nodes
+    # return typed RoundEntry payloads); the markdown builder depends on
+    # that too. No defensive isinstance check here.
+    out: list[dict[str, Any]] = []
+    for entry in sorted(
+        rounds,
+        key=lambda e: (int(e.get("round", 0) or 0), str(e.get("side", ""))),
+    ):
+        citations_raw = entry.get("citations") or []
+        citations: list[dict[str, Any]] = []
+        for c in citations_raw:
+            if not isinstance(c, dict):
+                continue
+            ctype = c.get("type")
+            ref = c.get("ref")
+            if ctype not in ("cert", "url") or not ref:
+                continue
+            citations.append(
+                {
+                    "type": ctype,
+                    "ref": str(ref),
+                    "title": str(c.get("title") or ""),
+                }
+            )
+        out.append(
+            {
+                "side": str(entry.get("side", "")),
+                "round": int(entry.get("round", 0)),
+                "argument_md": str(entry.get("argument", "")),
+                "citations": citations,
+            }
+        )
+    return out
+
+
 async def render(state: DebateState) -> dict[str, Any]:
-    """Build a deterministic markdown transcript from state."""
+    """Build a deterministic markdown transcript, structured rounds, and hash."""
     claim = state.get("claim", "")
     verdict = state.get("verdict")
     confidence = state.get("confidence")
@@ -53,11 +99,30 @@ async def render(state: DebateState) -> dict[str, Any]:
             lines.append("## Reasoning")
             lines.append(reasoning)
         transcript = "\n".join(lines)
+
+        # Structured rounds + deterministic hash. The hash covers the
+        # logical payload, not the markdown, so it's stable across render
+        # changes that don't affect the debate substance.
+        rounds_struct = _build_rounds_struct(list(rounds))
+        hash_verdict = str(verdict) if verdict is not None else "INCONCLUSIVE"
+        hash_confidence = float(confidence) if confidence is not None else 0.0
+        transcript_hash = hash_transcript(
+            claim=claim,
+            verdict=hash_verdict,
+            confidence=hash_confidence,
+            rounds=rounds_struct,
+        )
         update_current_span(
             output={
                 "transcript_length": len(transcript),
                 "verdict": verdict,
                 "confidence": confidence,
+                "rounds_struct_count": len(rounds_struct),
+                "transcript_hash": transcript_hash,
             }
         )
-        return {"transcript_md": transcript}
+        return {
+            "transcript_md": transcript,
+            "rounds_struct": rounds_struct,
+            "transcript_hash": transcript_hash,
+        }

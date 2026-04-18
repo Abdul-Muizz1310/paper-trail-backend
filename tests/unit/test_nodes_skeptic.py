@@ -52,3 +52,38 @@ async def test_skeptic_returns_single_round(monkeypatch) -> None:  # type: ignor
     assert r["side"] == "skeptic"
     assert r["round"] == 1
     assert "false" in r["argument"]
+
+
+async def test_skeptic_citations_only_contain_pool_cert_ids(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Case 17: same guarantee as proponent — no invented cert refs."""
+    from uuid import uuid4
+
+    valid = uuid4()
+    invented = uuid4()
+
+    async def fake_chat(messages, **kw):  # type: ignore[no-untyped-def]
+        return f"Counter [cert:{valid}] and [cert:{invented}] is made up."
+
+    monkeypatch.setattr(mod, "chat", fake_chat)
+    pool = [
+        {
+            "certificate_id": str(valid),
+            "url": "https://pool.example",
+            "title": "Valid",
+            "text": "content",
+        }
+    ]
+    out = await mod.skeptic(
+        {
+            "claim": "c",
+            "max_rounds": 3,
+            "round": 0,
+            "rounds": [],
+            "plan": {"sub_questions": [], "search_queries": [], "evidence": []},
+            "evidence_pool": pool,
+        }
+    )
+    citations = out["rounds"][0]["citations"]
+    refs = [c["ref"] for c in citations]
+    assert str(valid) in refs
+    assert str(invented) not in refs

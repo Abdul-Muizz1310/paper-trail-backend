@@ -46,6 +46,15 @@ class Debate(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     rounds: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     transcript_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Block 6 (Spec 08) — evidence pool + structured transcript. All nullable
+    # for backward compatibility with debates created before migration 0002.
+    evidence_pool: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    rounds_struct: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    transcript_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

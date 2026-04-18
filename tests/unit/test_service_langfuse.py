@@ -17,26 +17,43 @@ class FakeDebate:
         self.confidence: float | None = None
         self.rounds: list[dict] = []
         self.transcript_md: str | None = None
+        self.evidence_pool: list[dict] | None = None
+        self.rounds_struct: list[dict] | None = None
+        self.transcript_hash: str | None = None
 
 
 class FakeRepo:
     def __init__(self) -> None:
         self.store: dict[UUID, FakeDebate] = {}
 
-    async def create(self, claim: str, max_rounds: int) -> FakeDebate:
+    async def create(  # type: ignore[no-untyped-def]
+        self, claim: str, max_rounds: int, evidence_pool=None
+    ) -> FakeDebate:
         d = FakeDebate(uuid4(), claim, max_rounds)
+        d.evidence_pool = evidence_pool if evidence_pool else None
         self.store[d.id] = d
         return d
 
     async def get(self, debate_id: UUID) -> FakeDebate | None:
         return self.store.get(debate_id)
 
-    async def update_result(self, debate_id, verdict, confidence, rounds, transcript_md) -> None:  # type: ignore[no-untyped-def]
+    async def update_result(  # type: ignore[no-untyped-def]
+        self,
+        debate_id,
+        verdict,
+        confidence,
+        rounds,
+        transcript_md,
+        rounds_struct=None,
+        transcript_hash=None,
+    ) -> None:
         d = self.store[debate_id]
         d.verdict = verdict
         d.confidence = confidence
         d.rounds = rounds
         d.transcript_md = transcript_md
+        d.rounds_struct = rounds_struct
+        d.transcript_hash = transcript_hash
         d.status = "done"
 
     async def set_status(self, debate_id: UUID, status: str) -> None:

@@ -28,8 +28,22 @@ class DebateRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, claim: str, max_rounds: int) -> Debate:
-        d = Debate(claim=claim, max_rounds=max_rounds, status=DebateStatus.pending, rounds=[])
+    async def create(
+        self,
+        claim: str,
+        max_rounds: int,
+        evidence_pool: list[dict[str, Any]] | None = None,
+    ) -> Debate:
+        # Normalize an empty pool to NULL so "absent" and "empty" are
+        # indistinguishable at the storage layer.
+        normalized_pool = evidence_pool if evidence_pool else None
+        d = Debate(
+            claim=claim,
+            max_rounds=max_rounds,
+            status=DebateStatus.pending,
+            rounds=[],
+            evidence_pool=normalized_pool,
+        )
         self.session.add(d)
         await self.session.flush()
         await self.session.refresh(d)
@@ -65,6 +79,8 @@ class DebateRepo:
         confidence: float,
         rounds: list[dict[str, Any]],
         transcript_md: str,
+        rounds_struct: list[dict[str, Any]] | None = None,
+        transcript_hash: str | None = None,
     ) -> None:
         d = await self.get(debate_id)
         if d is None:
@@ -73,6 +89,13 @@ class DebateRepo:
         d.confidence = confidence
         d.rounds = rounds
         d.transcript_md = transcript_md
+        # Block 6 (Spec 08) — structured transcript artifacts, both
+        # nullable when the graph hasn't produced them yet (older code
+        # paths, tests).
+        if rounds_struct is not None:
+            d.rounds_struct = rounds_struct
+        if transcript_hash is not None:
+            d.transcript_hash = transcript_hash
         d.status = DebateStatus.done
         d.updated_at = datetime.now(UTC)
 
