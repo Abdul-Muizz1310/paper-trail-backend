@@ -27,6 +27,7 @@ dependencies = [
     "upstash-redis>=1.2",
     "pyyaml>=6.0",
     "python-jose[cryptography]>=3.3",
+    "pyjwt[crypto]>=2.9",
     "tenacity>=9.0",
 ]
 
