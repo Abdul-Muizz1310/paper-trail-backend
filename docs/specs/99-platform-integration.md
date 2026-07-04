@@ -19,7 +19,7 @@ X-Platform-Token: <Ed25519-signed JWT or anything in demo mode>
 ```json
 {
   "debate_id": "UUID",
-  "transcript_url": "https://paper-trail-backend-7h27.onrender.com/debates/{id}/transcript.md",
+  "transcript_url": "https://paper-trail-backend-jjpf.onrender.com/debates/{id}/transcript.md",
   "verdict": "TRUE|FALSE|INCONCLUSIVE",
   "confidence": 0.87,
   "rounds_run": 2

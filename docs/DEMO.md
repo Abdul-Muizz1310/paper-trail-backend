@@ -1,13 +1,13 @@
 # paper-trail demo script
 
-> Everything here runs against the live backend at `https://paper-trail-backend-7h27.onrender.com`. No frontend required — `paper-trail-frontend` is Phase 2b. Swap in `http://localhost:8000` if you're running locally.
+> Everything here runs against the live backend at `https://paper-trail-backend-jjpf.onrender.com`. No frontend required — `paper-trail-frontend` is Phase 2b. Swap in `http://localhost:8000` if you're running locally.
 
 ## 60-second demo (synchronous)
 
 The platform endpoint runs the graph end-to-end in one HTTP call and caps at 3 rounds, which is perfect for a scripted demo.
 
 ```bash
-BASE=https://paper-trail-backend-7h27.onrender.com
+BASE=https://paper-trail-backend-jjpf.onrender.com
 
 curl -sS -X POST "$BASE/platform/debate" \
   -H 'Authorization: Bearer demo' \
@@ -63,7 +63,7 @@ This is a well-documented popular misconception...
 This matches how the web UI will consume the backend in Phase 2b. The `/debates` endpoint returns immediately with a `stream_url`; the graph runs in a background task and emits Server-Sent Events as state changes.
 
 ```bash
-BASE=https://paper-trail-backend-7h27.onrender.com
+BASE=https://paper-trail-backend-jjpf.onrender.com
 
 # 1. create — returns immediately
 DEBATE=$(curl -sS -X POST "$BASE/debates" \

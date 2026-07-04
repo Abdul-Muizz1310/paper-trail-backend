@@ -45,7 +45,7 @@ services:
       - key: METRICS_TOKEN
         sync: false
       - key: PUBLIC_BASE_URL
-        value: "https://paper-trail-backend-7h27.onrender.com"
+        value: "https://paper-trail-backend-jjpf.onrender.com"
       - key: CORS_ORIGINS
         value: "https://paper-trail-frontend-sable.vercel.app,http://localhost:3000"
       # Fail closed: DEMO_MODE must be set explicitly by the operator (default
