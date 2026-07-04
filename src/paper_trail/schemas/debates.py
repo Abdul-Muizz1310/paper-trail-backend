@@ -91,6 +91,12 @@ class TranscriptJsonOut(BaseModel):
     confidence: float
     rounds: list[TranscriptRound]
     transcript_hash: str = Field(min_length=64, max_length=64)
+    # Cryptographic receipt: an Ed25519 signature (base64) over the same
+    # canonical transcript JSON that `transcript_hash` digests. Null when no
+    # signing key is configured. Verify against the key served at
+    # `GET /platform/receipt-public-key`.
+    signature: str | None = None
+    signature_alg: str | None = None
 
 
 class DebateOut(BaseModel):

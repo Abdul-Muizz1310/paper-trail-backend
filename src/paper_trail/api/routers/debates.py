@@ -12,8 +12,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
-from paper_trail.agents.tools.transcript import hash_transcript
+from paper_trail.agents.tools.transcript import canonical_transcript_json, hash_transcript
 from paper_trail.api.deps import get_service
+from paper_trail.core.errors import InvalidCursorError
+from paper_trail.core.rate_limit import rate_limiter
+from paper_trail.core.signing import SIGNATURE_ALG, sign_transcript
 from paper_trail.models.debate import Debate
 from paper_trail.schemas.debates import (
     Citation,
@@ -54,6 +57,7 @@ def _to_debate_out(d: Debate) -> DebateOut:
     "",
     response_model=DebateCreateOut,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limiter("debates"))],
 )
 async def create_debate(
     body: DebateCreateIn,
@@ -87,14 +91,16 @@ async def create_debate(
 
 
 async def _run_debate_background(debate_id: UUID) -> None:
-    """Run the debate graph in a fresh session (not the request-scoped one)."""
-    from paper_trail.core.db import session_scope
-    from paper_trail.repositories.debates import DebateRepo
+    """Run the debate graph off the request path.
 
-    async with session_scope() as session:
-        repo = DebateRepo(session)
-        svc = DebateService(repo)
-        await svc.run(debate_id)
+    The service opens a short-lived session per write (commit-per-write), so no
+    single connection is pinned for the whole 30-120s run (REL-1) and SSE
+    consumers see progress live as each round commits.
+    """
+    from paper_trail.core.db import session_scope
+
+    svc = DebateService(session_factory=session_scope)
+    await svc.run(debate_id)
 
 
 @router.get("", response_model=DebateListOut)
@@ -103,7 +109,12 @@ async def list_debates(
     cursor: str | None = None,
     limit: int = Query(50, ge=1, le=100),
 ) -> DebateListOut:
-    items, next_cursor = await service.list(cursor, limit)
+    try:
+        items, next_cursor = await service.list(cursor, limit)
+    except InvalidCursorError as exc:
+        # Reject malformed client cursors cleanly instead of leaking a 500
+        # (COR-1 / negative-space: reject invalid input early).
+        raise HTTPException(status_code=422, detail="invalid cursor") from exc
     return DebateListOut(
         items=[_to_debate_out(d) for d in items],
         next_cursor=next_cursor,
@@ -226,6 +237,18 @@ async def get_transcript_json(
             rounds=rounds_payload,
         )
 
+    # Cryptographic receipt: sign the canonical JSON of the response payload
+    # (claim, verdict, confidence, rounds as returned). A verifier reconstructs
+    # that canonical form and checks it against the key at
+    # /platform/receipt-public-key. Null signature when no key is configured.
+    canonical = canonical_transcript_json(
+        claim=d.claim,
+        verdict=verdict,
+        confidence=confidence,
+        rounds=[r.model_dump() for r in typed_rounds],
+    )
+    signature = sign_transcript(canonical)
+
     return TranscriptJsonOut(
         debate_id=d.id,
         claim=d.claim,
@@ -233,6 +256,8 @@ async def get_transcript_json(
         confidence=confidence,
         rounds=typed_rounds,
         transcript_hash=transcript_hash,
+        signature=signature,
+        signature_alg=SIGNATURE_ALG if signature is not None else None,
     )
 
 

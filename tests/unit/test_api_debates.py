@@ -494,6 +494,95 @@ async def test_transcript_json_coerces_non_int_round(client_with_fake) -> None:
     assert r.json()["rounds"][0]["round"] == 1
 
 
+async def test_transcript_json_signed_when_key_configured(client_with_fake, monkeypatch) -> None:
+    """FIX (receipt): transcript.json carries a verifiable Ed25519 signature."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from paper_trail.agents.tools.transcript import canonical_transcript_json
+    from paper_trail.core import signing
+    from paper_trail.core.config import settings
+
+    pem = (
+        Ed25519PrivateKey.generate()
+        .private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        .decode()
+    )
+    monkeypatch.setattr(settings, "transcript_signing_key", pem)
+
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.rounds_struct = [{"side": "proponent", "round": 1, "argument_md": "a", "citations": []}]
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["signature_alg"] == "Ed25519"
+    assert body["signature"]
+
+    # The signature must verify over the canonical form of the response.
+    canonical = canonical_transcript_json(
+        claim=body["claim"],
+        verdict=body["verdict"],
+        confidence=body["confidence"],
+        rounds=[
+            {
+                "side": rnd["side"],
+                "round": rnd["round"],
+                "argument_md": rnd["argument_md"],
+                "citations": rnd["citations"],
+                "confidence": rnd["confidence"],
+            }
+            for rnd in body["rounds"]
+        ],
+    )
+    pub = signing.public_key_pem()
+    assert pub is not None
+    assert signing.verify_transcript_signature(canonical, body["signature"], pub) is True
+
+
+async def test_transcript_json_unsigned_when_no_key(client_with_fake, monkeypatch) -> None:
+    from paper_trail.core.config import settings
+
+    monkeypatch.setattr(settings, "transcript_signing_key", "")
+    did = await client_with_fake.create("hi", 3)
+    client_with_fake.store[did].status = "done"
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["signature"] is None
+    assert body["signature_alg"] is None
+
+
+async def test_list_debates_invalid_cursor_422(monkeypatch) -> None:
+    """COR-1: a malformed cursor is rejected with 422, not a 500."""
+    from paper_trail.core.errors import InvalidCursorError
+
+    class _RaisingService:
+        async def list(self, cursor, limit=50):  # type: ignore[no-untyped-def]
+            raise InvalidCursorError("invalid cursor")
+
+    async def _override():  # type: ignore[no-untyped-def]
+        yield _RaisingService()
+
+    app.dependency_overrides[deps.get_service] = _override
+    try:
+        async with await _make_client() as c:
+            r = await c.get("/debates", params={"cursor": "!!!not-valid!!!"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "invalid cursor"
+    finally:
+        app.dependency_overrides.clear()
+
+
 async def test_stream_emits_state_and_done(client_with_fake, monkeypatch) -> None:
     monkeypatch.setattr(debates_router_mod, "STREAM_POLL_SECONDS", 0.01)
     monkeypatch.setattr(debates_router_mod, "STREAM_MAX_SECONDS", 5.0)

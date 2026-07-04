@@ -15,6 +15,7 @@ EdDSA JWT (see bastion ``src/lib/gateway/jwt.ts``).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -30,7 +31,17 @@ logger = logging.getLogger(__name__)
 _Handler = Callable[[Request], Awaitable[Response]]
 
 _HEADER = "x-platform-token"
-_EXEMPT_EXACT = frozenset({"/health", "/version", "/metrics", "/openapi.json"})
+_EXEMPT_EXACT = frozenset(
+    {
+        "/health",
+        "/version",
+        "/metrics",
+        "/openapi.json",
+        # The receipt verification key must be publicly fetchable so third
+        # parties can verify signed transcripts even under token enforcement.
+        "/platform/receipt-public-key",
+    }
+)
 _EXEMPT_PREFIXES = ("/docs", "/redoc")
 _PUBLIC_KEY_TTL_S = 3600.0
 
@@ -48,21 +59,17 @@ def _wrap_pem(b64_der: str) -> str:
     return f"-----BEGIN PUBLIC KEY-----\n{b64_der.strip()}\n-----END PUBLIC KEY-----\n"
 
 
-def load_public_key_pem() -> str | None:
-    """Resolve bastion's Ed25519 public key as PEM (env first, then cached URL)."""
-    raw = os.environ.get("BASTION_SIGNING_KEY_PUBLIC")
-    if raw:
-        return _wrap_pem(raw)
-
-    url = os.environ.get("BASTION_PUBLIC_KEY_URL")
-    if not url:
-        return None
-
-    global _key_cache
+def _cached_url_key() -> str | None:
+    """Return the cached URL-fetched PEM if still fresh, else None."""
     cached_at, cached = _key_cache
-    now = time.monotonic()
-    if cached is not None and (now - cached_at) < _PUBLIC_KEY_TTL_S:
+    if cached is not None and (time.monotonic() - cached_at) < _PUBLIC_KEY_TTL_S:
         return cached
+    return None
+
+
+def _fetch_and_cache_url_key(url: str) -> str | None:
+    """Blocking fetch of the public key from `url` (run off the event loop)."""
+    global _key_cache
     try:
         resp = httpx.get(url, timeout=5.0)
         resp.raise_for_status()
@@ -70,8 +77,57 @@ def load_public_key_pem() -> str | None:
     except Exception:  # pragma: no cover - network failure path
         logger.warning("could not fetch bastion public key from %s", url)
         return None
-    _key_cache = (now, pem)
+    _key_cache = (time.monotonic(), pem)
     return pem
+
+
+def load_public_key_pem() -> str | None:
+    """Resolve bastion's Ed25519 public key as PEM (env first, then cached URL).
+
+    Synchronous variant — safe off the event loop (e.g. inside asyncio.to_thread
+    or from a sync test). Prefer ``load_public_key_pem_async`` on the loop.
+    """
+    raw = os.environ.get("BASTION_SIGNING_KEY_PUBLIC")
+    if raw:
+        return _wrap_pem(raw)
+    url = os.environ.get("BASTION_PUBLIC_KEY_URL")
+    if not url:
+        return None
+    cached = _cached_url_key()
+    if cached is not None:
+        return cached
+    return _fetch_and_cache_url_key(url)
+
+
+async def load_public_key_pem_async() -> str | None:
+    """Async key resolver that never blocks the event loop.
+
+    The env-var key is instant; the URL fetch (only on a cold cache) is pushed
+    through ``asyncio.to_thread`` so a slow/hanging bastion never stalls other
+    in-flight requests on a single-worker deploy.
+    """
+    raw = os.environ.get("BASTION_SIGNING_KEY_PUBLIC")
+    if raw:
+        return _wrap_pem(raw)
+    url = os.environ.get("BASTION_PUBLIC_KEY_URL")
+    if not url:
+        return None
+    cached = _cached_url_key()
+    if cached is not None:
+        return cached
+    return await asyncio.to_thread(_fetch_and_cache_url_key, url)
+
+
+def verify_platform_jwt(token: str) -> bool:
+    """Verify an EdDSA platform JWT against bastion's public key.
+
+    Fails **closed**: returns False when no key is configured (so a
+    non-demo deployment with no key rejects everything) or verification fails.
+    """
+    pem = load_public_key_pem()
+    if pem is None:
+        return False
+    return _verify(token, pem)
 
 
 def _is_exempt(path: str) -> bool:
@@ -97,7 +153,7 @@ def install_platform_token(app: FastAPI, *, demo_mode: bool) -> None:
     async def _platform_token_middleware(request: Request, call_next: _Handler) -> Response:
         if demo_mode or _is_exempt(request.url.path):
             return await call_next(request)
-        pem = load_public_key_pem()
+        pem = await load_public_key_pem_async()
         if pem is None:
             # Enforcement is opt-in; with no key configured we fail open.
             return await call_next(request)

@@ -128,8 +128,12 @@ async def test_platform_default_max_rounds_three(fake_service, monkeypatch) -> N
     assert fake_service.create_called_with[0][1] == 3
 
 
-async def test_platform_transcript_url_shape(fake_service, monkeypatch) -> None:
+async def test_platform_transcript_url_is_absolute(fake_service, monkeypatch) -> None:
+    """Spec 99: transcript_url is absolute, built from PUBLIC_BASE_URL."""
     monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+    from paper_trail.api.routers import platform as platform_mod
+
+    monkeypatch.setattr(platform_mod.settings, "public_base_url", "https://api.example.com/")
     async with await _client() as c:
         r = await c.post(
             "/platform/debate",
@@ -137,7 +141,10 @@ async def test_platform_transcript_url_shape(fake_service, monkeypatch) -> None:
             headers={"Authorization": "Bearer demo"},
         )
     body = r.json()
-    assert body["transcript_url"] == f"/debates/{body['debate_id']}/transcript.md"
+    assert (
+        body["transcript_url"]
+        == f"https://api.example.com/debates/{body['debate_id']}/transcript.md"
+    )
 
 
 async def test_platform_malformed_bearer_401(fake_service, monkeypatch) -> None:
@@ -163,6 +170,39 @@ async def test_platform_empty_bearer_token_401(fake_service, monkeypatch) -> Non
             headers={"Authorization": "Bearer   "},
         )
     assert r.status_code == 401
+
+
+async def test_receipt_public_key_404_when_unsigned(fake_service, monkeypatch) -> None:
+    from paper_trail.core.config import settings
+
+    monkeypatch.setattr(settings, "transcript_signing_key", "")
+    async with await _client() as c:
+        r = await c.get("/platform/receipt-public-key")
+    assert r.status_code == 404
+
+
+async def test_receipt_public_key_published_when_signed(fake_service, monkeypatch) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from paper_trail.core.config import settings
+
+    pem = (
+        Ed25519PrivateKey.generate()
+        .private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        .decode()
+    )
+    monkeypatch.setattr(settings, "transcript_signing_key", pem)
+    async with await _client() as c:
+        r = await c.get("/platform/receipt-public-key")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["alg"] == "Ed25519"
+    assert "PUBLIC KEY" in body["public_key"]
 
 
 async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatch) -> None:

@@ -16,5 +16,8 @@ def test_cors_origins_list_parses_and_strips() -> None:
 
 
 def test_demo_mode_defaults_false() -> None:
-    s = Settings()
+    # Hermetic: ignore any developer-local .env (which may set DEMO_MODE=true)
+    # so this asserts the *code* default. Fail-closed means the default is
+    # False; a real deploy must opt in explicitly (see render.yaml / finding #2).
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.demo_mode is False
