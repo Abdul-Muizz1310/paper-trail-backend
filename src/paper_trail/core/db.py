@@ -20,10 +20,29 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def make_engine() -> Any:
-    """Create (and memoize) the async SQLAlchemy engine."""
+    """Create (and memoize) the async SQLAlchemy engine.
+
+    On a serverless Postgres (Neon) the proxy drops idle connections and
+    scales compute to zero, so a pooled connection reused after an idle
+    window is dead — ``pool_pre_ping`` revalidates on checkout and
+    ``pool_recycle`` retires connections before Neon's idle timeout (REL-2 /
+    P9). The size/overflow/timeout caps bound how many long operations can
+    hold connections concurrently (REL-1). These pool args are meaningless
+    for sqlite (used in tests), so they are only applied to real databases.
+    """
     global _engine, _sessionmaker
     if _engine is None:
-        _engine = create_async_engine(settings.database_url, future=True)
+        url = settings.database_url
+        kwargs: dict[str, Any] = {"future": True}
+        if not url.startswith("sqlite"):
+            kwargs.update(
+                pool_pre_ping=True,
+                pool_recycle=300,
+                pool_size=settings.db_pool_size,
+                max_overflow=settings.db_max_overflow,
+                pool_timeout=settings.db_pool_timeout,
+            )
+        _engine = create_async_engine(url, **kwargs)
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 

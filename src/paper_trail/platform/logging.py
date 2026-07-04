@@ -37,7 +37,13 @@ def configure_logging() -> None:
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        # Route structlog records through the stdlib logging pipeline (the
+        # ProcessorFormatter handler below renders them). This MUST be the
+        # stdlib LoggerFactory to pair with `stdlib.BoundLogger`: a
+        # PrintLoggerFactory yields a PrintLogger whose `.msg()` rejects the
+        # `extra=` kwargs stdlib BoundLogger forwards, breaking every logging
+        # call made by libraries that bind structlog stdlib loggers.
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 

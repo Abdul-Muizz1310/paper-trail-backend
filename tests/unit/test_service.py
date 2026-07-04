@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID, uuid4
 
 import pytest
@@ -286,5 +287,40 @@ async def test_run_graph_error_sets_error_status(monkeypatch) -> None:  # type: 
     monkeypatch.setattr(graph_mod, "build_graph", lambda: BrokenGraph())
     did = await svc.create("c", 3)
     with pytest.raises(RuntimeError):
+        await svc.run(did)
+    assert repo.store[did].status == "error"
+
+
+async def test_run_exceeding_deadline_marks_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """REL-3: a run that outlives settings.debate_deadline_s must be aborted.
+
+    The service wraps graph.astream in `async with asyncio.timeout(...)`. When
+    the graph stalls past the deadline, the run must fail closed — mark the
+    debate `error` and re-raise the TimeoutError so the worker/connection are
+    released instead of being pinned indefinitely by an upstream 429 storm.
+
+    Guards the wrapper: remove the asyncio.timeout and the hanging graph runs
+    to completion, the debate ends `done`, and no exception is raised — this
+    test then fails on both the raises() and the status assertion.
+    """
+    from paper_trail.core.config import settings
+
+    monkeypatch.setattr(settings, "debate_deadline_s", 0.05)
+
+    repo = FakeRepo()
+    svc = DebateService(repo)
+
+    class HangingGraph:
+        async def astream(self, state, stream_mode="updates"):  # type: ignore[no-untyped-def]
+            # Stall well past the (tiny, monkeypatched) deadline before ever
+            # producing output. asyncio.timeout must cut this short.
+            await asyncio.sleep(3600)
+            yield {"render": {"transcript_md": "# never reached"}}  # pragma: no cover
+
+    from paper_trail.agents import graph as graph_mod
+
+    monkeypatch.setattr(graph_mod, "build_graph", lambda: HangingGraph())
+    did = await svc.create("c", 3)
+    with pytest.raises((asyncio.TimeoutError, TimeoutError)):
         await svc.run(did)
     assert repo.store[did].status == "error"

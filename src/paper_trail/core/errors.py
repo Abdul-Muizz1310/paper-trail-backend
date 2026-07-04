@@ -15,3 +15,7 @@ class ToolError(Exception):
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
         self.detail = detail
+
+
+class InvalidCursorError(ValueError):
+    """A client-supplied pagination cursor could not be decoded (COR-1)."""

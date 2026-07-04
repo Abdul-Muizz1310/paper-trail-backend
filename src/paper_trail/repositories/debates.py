@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -10,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from paper_trail.core.errors import InvalidCursorError
 from paper_trail.models.debate import Debate, DebateStatus
 
 
@@ -19,9 +21,15 @@ def _encode_cursor(created_at: datetime, did: UUID) -> str:
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
-    raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-    ts, did = raw.split("|", 1)
-    return datetime.fromisoformat(ts), UUID(did)
+    # The cursor comes straight from a client query param, so every decode
+    # step can fail on garbage input. Reject it as a clean domain error
+    # (mapped to 422 at the router) instead of leaking a 500 (COR-1).
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        ts, did = raw.split("|", 1)
+        return datetime.fromisoformat(ts), UUID(did)
+    except (ValueError, binascii.Error) as exc:
+        raise InvalidCursorError("invalid cursor") from exc
 
 
 class DebateRepo:

@@ -5,7 +5,7 @@ Note: uses sqlite+aiosqlite for portability. pgvector integration is deferred to
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -72,8 +72,16 @@ async def test_set_status(session) -> None:  # type: ignore[no-untyped-def]
 async def test_list_and_cursor_pagination(session) -> None:  # type: ignore[no-untyped-def]
     repo = DebateRepo(session)
     created = []
+    # Assign strictly increasing created_at so newest-first ordering is
+    # deterministic. Without this the loop's rows can share a created_at tick
+    # (coarse clock resolution), and the (created_at, id) sort then tie-breaks
+    # on the random UUID id — making insertion-order assertions flaky.
+    base = datetime(2024, 1, 1, tzinfo=UTC)
     for i in range(5):
-        created.append(await repo.create(f"claim {i}", 3))
+        d = await repo.create(f"claim {i}", 3)
+        d.created_at = base + timedelta(seconds=i)
+        await session.flush()
+        created.append(d)
     items, next_cur = await repo.list_page(cursor=None, limit=2)
     assert len(items) == 2
     assert next_cur is not None
@@ -262,6 +270,15 @@ async def test_update_result_without_rounds_struct_leaves_null(session) -> None:
     assert got is not None
     assert got.rounds_struct is None
     assert got.transcript_hash is None
+
+
+async def test_list_page_invalid_cursor_raises(session) -> None:  # type: ignore[no-untyped-def]
+    """COR-1: a garbage cursor raises a typed InvalidCursorError, not a 500."""
+    from paper_trail.core.errors import InvalidCursorError
+
+    repo = DebateRepo(session)
+    with pytest.raises(InvalidCursorError):
+        await repo.list_page(cursor="%%%not-a-valid-cursor%%%", limit=5)
 
 
 async def test_cursor_roundtrip_encode_decode() -> None:

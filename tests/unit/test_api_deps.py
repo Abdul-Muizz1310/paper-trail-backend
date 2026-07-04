@@ -1,21 +1,20 @@
-"""Unit test for api/deps.py — exercises the real session_scope wiring."""
+"""Unit test for api/deps.py — the DebateService provider wiring."""
 
 from __future__ import annotations
-
-import contextlib
 
 import paper_trail.core.db as db_mod
 from paper_trail.api.deps import get_service
 from paper_trail.core.config import settings
+from paper_trail.core.db import session_scope
 from paper_trail.services.debates import DebateService
 
 
-async def test_get_service_yields_debate_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_get_service_returns_debate_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(settings, "database_url", "sqlite+aiosqlite:///:memory:")
     monkeypatch.setattr(db_mod, "_engine", None)
     monkeypatch.setattr(db_mod, "_sessionmaker", None)
-    gen = get_service()
-    svc = await gen.__anext__()
+    svc = get_service()
     assert isinstance(svc, DebateService)
-    with contextlib.suppress(StopAsyncIteration):
-        await gen.__anext__()
+    # Bound to the real session_scope so every op uses a short-lived session
+    # (no request-scoped connection pinned for the whole request/stream).
+    assert svc._session_factory is session_scope
