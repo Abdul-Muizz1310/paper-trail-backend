@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from paper_trail.agents.nodes._format import format_evidence_pool
 from paper_trail.agents.state import DebateState
+from paper_trail.agents.tools.fetch import fetch
 from paper_trail.agents.tools.search import search
+from paper_trail.core.config import settings
 from paper_trail.core.langfuse import span, update_current_span
 from paper_trail.core.llm import chat_json
 from paper_trail.core.prompts import load
@@ -56,21 +59,63 @@ async def plan(state: DebateState) -> dict[str, Any]:
 
         evidence: list[dict[str, Any]] = []
         failed_queries: list[dict[str, str]] = []
-        for q in search_queries:
-            try:
-                hits = await search(q)
-            except Exception as exc:
-                failed_queries.append({"query": q, "error": f"{type(exc).__name__}: {exc}"})
-                continue
-            for h in hits:
-                evidence.append(
-                    {
-                        "title": h.title,
-                        "url": h.url,
-                        "snippet": h.snippet,
-                        "published_date": h.published_date,
-                    }
+        # OPT-1: the searches are independent, so run them concurrently — the
+        # plan node is on the critical path (START->plan->fan-out) and
+        # sequential awaits made its latency the sum of every query.
+        if search_queries:
+            search_results = await asyncio.gather(
+                *(search(q) for q in search_queries),
+                return_exceptions=True,
+            )
+            for q, res in zip(search_queries, search_results, strict=True):
+                if isinstance(res, BaseException):
+                    failed_queries.append({"query": q, "error": f"{type(res).__name__}: {res}"})
+                    continue
+                for h in res:
+                    evidence.append(
+                        {
+                            "title": h.title,
+                            "url": h.url,
+                            "snippet": h.snippet,
+                            "published_date": h.published_date,
+                        }
+                    )
+
+        # Ground arguments in the actual article body, not just Tavily's short
+        # snippet: fetch the top-N unique-URL hits concurrently and attach the
+        # extracted main-content text. A failed fetch leaves the snippet-only
+        # entry intact so the debate still runs.
+        fetched_count = 0
+        top_n = settings.evidence_fetch_top_n
+        if top_n > 0 and evidence:
+            seen_urls: set[str] = set()
+            to_fetch: list[dict[str, Any]] = []
+            for item in evidence:
+                url = str(item.get("url") or "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    to_fetch.append(item)
+                if len(to_fetch) >= top_n:
+                    break
+            if to_fetch:
+                fetched = await asyncio.gather(
+                    *(fetch(str(item["url"])) for item in to_fetch),
+                    return_exceptions=True,
                 )
+                limit = settings.evidence_fetch_char_limit
+                for item, doc in zip(to_fetch, fetched, strict=True):
+                    if isinstance(doc, BaseException):
+                        failed_queries.append(
+                            {
+                                "query": f"fetch:{item.get('url')}",
+                                "error": f"{type(doc).__name__}: {doc}",
+                            }
+                        )
+                        continue
+                    text = (doc.text or "").strip()
+                    if text:
+                        item["text"] = text[:limit]
+                        fetched_count += 1
         plan_payload = {
             "sub_questions": sub_questions,
             "search_queries": search_queries,
@@ -81,6 +126,7 @@ async def plan(state: DebateState) -> dict[str, Any]:
                 "sub_question_count": len(sub_questions),
                 "search_query_count": len(search_queries),
                 "evidence_count": len(evidence),
+                "fetched_article_count": fetched_count,
                 "failed_query_count": len(failed_queries),
                 "sub_questions": sub_questions,
                 "search_queries": search_queries,

@@ -11,6 +11,9 @@ from collections.abc import Iterable
 from typing import Any
 
 _MAX_SNIPPET_CHARS = 240
+# When an evidence item carries full extracted article text (fetched by the
+# plan node), we can afford to surface more of it than a bare Tavily snippet.
+_MAX_ARTICLE_CHARS = 800
 _MAX_EVIDENCE_ITEMS = 10
 # Pool items can carry full text bodies (vs evidence hits' snippets), so
 # trim a little harder when formatting into LLM context.
@@ -62,15 +65,22 @@ def format_evidence(evidence: Iterable[dict[str, Any]] | None) -> str:
             continue
         title = str(item.get("title") or "(untitled)").strip()
         url = str(item.get("url") or "").strip()
-        snippet = str(item.get("snippet") or "").strip()
-        if len(snippet) > _MAX_SNIPPET_CHARS:
-            snippet = snippet[:_MAX_SNIPPET_CHARS].rstrip() + "…"
+        # Prefer full extracted article text (grounds arguments in the source
+        # body, not just Tavily's ~1-2 sentence snippet) when the plan node
+        # fetched it; otherwise fall back to the snippet.
+        article = str(item.get("text") or "").strip()
+        if article:
+            body, limit = article, _MAX_ARTICLE_CHARS
+        else:
+            body, limit = str(item.get("snippet") or "").strip(), _MAX_SNIPPET_CHARS
+        if len(body) > limit:
+            body = body[:limit].rstrip() + "…"
         header = f"{i}. **{title}**"
         if url:
             header += f" — {url}"
         lines.append(header)
-        if snippet:
-            lines.append(f"   {snippet}")
+        if body:
+            lines.append(f"   {body}")
     remaining = len(items) - _MAX_EVIDENCE_ITEMS
     if remaining > 0:
         lines.append(f"_({remaining} more item(s) omitted)_")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -49,8 +50,16 @@ def _route_after_judge(state: DebateState) -> list[Send] | str:
     return [Send("proponent", state), Send("skeptic", state)]
 
 
+@lru_cache(maxsize=1)
 def build_graph() -> Any:
     """Build and compile the debate StateGraph.
+
+    The topology is fully static (it depends on no per-request data — state is
+    supplied at astream/ainvoke time), so the compiled graph is memoized and
+    reused across every debate rather than reassembled + recompiled per run
+    (OPT-2). Node bodies resolve their implementations dynamically through the
+    node modules, so tests can still monkeypatch individual nodes on the cached
+    graph.
 
     Topology:
         START -> plan -> (proponent || skeptic) -> judge

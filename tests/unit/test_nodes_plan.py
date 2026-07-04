@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from paper_trail.agents.nodes import plan as plan_mod
+from paper_trail.agents.tools.fetch import FetchedDoc
 from paper_trail.agents.tools.search import SearchHit
 
 
@@ -41,14 +42,107 @@ async def test_plan_returns_shape(monkeypatch) -> None:  # type: ignore[no-untyp
     async def fake_search(query, k=5):  # type: ignore[no-untyped-def]
         return [SearchHit(title="T", url="https://x", snippet="s")]
 
+    async def fake_fetch(url):  # type: ignore[no-untyped-def]
+        return FetchedDoc(url=url, text="full article body")
+
     monkeypatch.setattr(plan_mod, "chat_json", fake_chat_json)
     monkeypatch.setattr(plan_mod, "search", fake_search)
+    monkeypatch.setattr(plan_mod, "fetch", fake_fetch)
 
     out = await plan_mod.plan({"claim": "c", "max_rounds": 3, "round": 0, "rounds": []})
     assert "plan" in out
     assert out["plan"]["sub_questions"] == ["q1", "q2"]
     assert out["plan"]["search_queries"] == ["sq1"]
     assert "evidence" in out["plan"]
+
+
+async def test_plan_fetches_full_article_text_for_hits(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """FIX (dead-code): plan wires fetch() to attach extracted body text."""
+
+    class FakePlan:
+        def __init__(self) -> None:
+            self.sub_questions = ["q1"]
+            self.search_queries = ["sq1"]
+
+    async def fake_chat_json(messages, schema, **kw):  # type: ignore[no-untyped-def]
+        return FakePlan()
+
+    async def fake_search(query, k=5):  # type: ignore[no-untyped-def]
+        return [SearchHit(title="T", url="https://x", snippet="short snippet")]
+
+    fetched_urls: list[str] = []
+
+    async def fake_fetch(url):  # type: ignore[no-untyped-def]
+        fetched_urls.append(url)
+        return FetchedDoc(url=url, text="the full extracted article body text")
+
+    monkeypatch.setattr(plan_mod, "chat_json", fake_chat_json)
+    monkeypatch.setattr(plan_mod, "search", fake_search)
+    monkeypatch.setattr(plan_mod, "fetch", fake_fetch)
+
+    out = await plan_mod.plan({"claim": "c", "max_rounds": 3, "round": 0, "rounds": []})
+    ev = out["plan"]["evidence"]
+    assert ev[0]["text"] == "the full extracted article body text"
+    assert fetched_urls == ["https://x"]
+
+
+async def test_plan_runs_searches_concurrently(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """OPT-1: independent Tavily queries are dispatched concurrently."""
+    import asyncio
+
+    class FakePlan:
+        def __init__(self) -> None:
+            self.sub_questions = ["q1"]
+            self.search_queries = ["a", "b", "c"]
+
+    async def fake_chat_json(messages, schema, **kw):  # type: ignore[no-untyped-def]
+        return FakePlan()
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_search(query, k=5):  # type: ignore[no-untyped-def]
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return []
+
+    monkeypatch.setattr(plan_mod, "chat_json", fake_chat_json)
+    monkeypatch.setattr(plan_mod, "search", fake_search)
+
+    await plan_mod.plan({"claim": "c", "max_rounds": 3, "round": 0, "rounds": []})
+    # If searches were sequential, max_in_flight would be 1.
+    assert max_in_flight == 3
+
+
+async def test_plan_fetch_failure_keeps_snippet(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A failed article fetch must not drop the snippet-only evidence entry."""
+    from paper_trail.core.errors import ToolError
+
+    class FakePlan:
+        def __init__(self) -> None:
+            self.sub_questions = ["q1"]
+            self.search_queries = ["sq1"]
+
+    async def fake_chat_json(messages, schema, **kw):  # type: ignore[no-untyped-def]
+        return FakePlan()
+
+    async def fake_search(query, k=5):  # type: ignore[no-untyped-def]
+        return [SearchHit(title="T", url="https://x", snippet="kept snippet")]
+
+    async def exploding_fetch(url):  # type: ignore[no-untyped-def]
+        raise ToolError("fetch_bad_status", "status=500")
+
+    monkeypatch.setattr(plan_mod, "chat_json", fake_chat_json)
+    monkeypatch.setattr(plan_mod, "search", fake_search)
+    monkeypatch.setattr(plan_mod, "fetch", exploding_fetch)
+
+    out = await plan_mod.plan({"claim": "c", "max_rounds": 3, "round": 0, "rounds": []})
+    ev = out["plan"]["evidence"]
+    assert ev[0]["snippet"] == "kept snippet"
+    assert "text" not in ev[0]
 
 
 # ---------------------------------------------------------------------------
