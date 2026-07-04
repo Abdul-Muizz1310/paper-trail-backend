@@ -55,10 +55,12 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - 📝 Deterministic markdown transcript with inline citations
 - 🔭 Full OpenTelemetry → LangFuse trace per debate (nodes, tools, generations)
 - 🛡️ Graceful observability — tracing never fails a request
-- 📡 SSE streaming endpoint for live UI updates
+- 📡 SSE streaming endpoint for live UI updates — each round commits as it's produced (per-write sessions), so progress is genuinely live, not batched at the end
 - 📄 Cursor-paginated debate history
-- 🔐 Synchronous bearer-authenticated endpoint for bastion integrations
-- 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429
+- 🔐 Synchronous Ed25519-JWT-authenticated endpoint for bastion integrations (fails closed outside demo mode)
+- 🧾 Ed25519-signed transcript receipts — `transcript.json` carries a signature over the canonical transcript; verify against the key at `GET /platform/receipt-public-key`
+- ⏱️ Redis-backed (Upstash) per-IP rate limiting in front of both debate-creation endpoints
+- 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline
 - ✅ Red-first TDD — failing test lands before every feature
 - 🚀 Render one-click deploy with auto Alembic migrations
 
@@ -266,6 +268,22 @@ uv run python -m evals.run_eval --max-claims 5  # smoke run
 
 Real mode **exits non-zero if accuracy < 80%**. Current: **84% (21/25)**. See [`evals/report.md`](evals/report.md).
 
+CI runs the deterministic `--dry-run` on every push (a smoke check that the harness itself still works); the real-mode 80% accuracy gate is run manually against OpenRouter before tagging a release.
+
+---
+
+## 🧾 Receipts (verifiable transcripts)
+
+`GET /debates/{id}/transcript.json` returns a `transcript_hash` (SHA-256 over the canonical `{claim, verdict, confidence, rounds}` JSON) **and**, when a signing key is configured, an Ed25519 `signature` over those same canonical bytes.
+
+To verify a receipt:
+
+1. `GET /platform/receipt-public-key` → `{ "alg": "Ed25519", "public_key": "<PEM>" }`.
+2. Reconstruct the canonical JSON from the response's `claim`, `verdict`, `confidence`, `rounds` (sorted keys, no whitespace, `ensure_ascii=false`).
+3. Verify `base64decode(signature)` against that canonical form with the public key.
+
+Configure signing by setting `TRANSCRIPT_SIGNING_KEY` (an Ed25519 private key PEM, e.g. `openssl genpkey -algorithm ed25519`). With no key set, receipts carry the hash only and `signature` is `null`.
+
 ---
 
 ## 📐 Engineering philosophy
@@ -286,9 +304,14 @@ Real mode **exits non-zero if accuracy < 80%**. Current: **84% (21/25)**. See [`
 Render free tier via [`render.yaml`](render.yaml). One-time setup:
 
 1. Render dashboard → **New → Blueprint** → connect this repo
-2. Fill every `sync: false` env var in service settings
+2. Fill every `sync: false` env var in service settings. Notably:
+   - `DEMO_MODE` — leave **unset/false** in production. It is not hardcoded; with it off and `BASTION_SIGNING_KEY_PUBLIC` unset, `/platform/debate` fails closed (401 for everyone).
+   - `BASTION_SIGNING_KEY_PUBLIC` — base64 DER of bastion's Ed25519 public key, to accept real platform tokens.
+   - `TRANSCRIPT_SIGNING_KEY` — Ed25519 private key PEM for signed receipts (optional).
+   - `METRICS_TOKEN` — shared bearer secret gating `/metrics` (optional; unset = public).
+   - `UPSTASH_REDIS_REST_URL` / `_TOKEN` + `RATE_LIMIT_ENABLED=true` — enable rate limiting.
 3. Copy the Deploy Hook URL → `gh secret set RENDER_DEPLOY_HOOK --body '<url>'`
-4. Push to `main` → CI lint/test/build → CI fires the hook → Render rebuilds → `preDeployCommand: alembic upgrade head` → new container goes live
+4. Push to `main` → CI lint/test/eval/build → CI fires the hook → Render rebuilds → `preDeployCommand: alembic upgrade head` → new container goes live
 
 ---
 

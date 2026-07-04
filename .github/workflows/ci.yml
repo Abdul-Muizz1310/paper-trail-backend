@@ -32,6 +32,20 @@ jobs:
       - run: uv sync --frozen --all-extras
       - run: uv run pytest -m "not slow and not integration"
 
+  eval:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
+      - run: uv sync --frozen --all-extras
+      # Ship-gate smoke check: the deterministic dry-run (no LLM, no network)
+      # runs on every push so the eval harness itself can't silently rot. The
+      # real-mode >=80% accuracy gate is run manually against OpenRouter before
+      # tagging a release.
+      - run: uv run python -m evals.run_eval --dry-run --report-path /tmp/eval-dry-run.md
+
   build:
     needs: test
     runs-on: ubuntu-latest

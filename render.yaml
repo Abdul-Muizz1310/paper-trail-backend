@@ -18,10 +18,6 @@ services:
         sync: false
       - key: OPENROUTER_MODEL_FALLBACK
         sync: false
-      - key: VOYAGE_API_KEY
-        sync: false
-      - key: VOYAGE_MODEL
-        sync: false
       - key: TAVILY_API_KEY
         sync: false
       - key: LANGFUSE_PUBLIC_KEY
@@ -30,13 +26,31 @@ services:
         sync: false
       - key: LANGFUSE_BASE_URL
         sync: false
+      # Upstash-backed rate limiting for the paid debate endpoints.
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      - key: CORS_ORIGINS
-        value: "https://paper-trail-frontend.vercel.app,http://localhost:3000"
-      - key: DEMO_MODE
+      - key: RATE_LIMIT_ENABLED
         value: "true"
+      # Ed25519 verification: bastion's public key (base64 DER). With DEMO_MODE
+      # off and no key set, /platform/debate fails closed (401 for everyone).
+      - key: BASTION_SIGNING_KEY_PUBLIC
+        sync: false
+      # Ed25519 private key (PEM) that signs transcript receipts. Publish the
+      # matching public key at /platform/receipt-public-key.
+      - key: TRANSCRIPT_SIGNING_KEY
+        sync: false
+      # Shared bearer secret gating the Prometheus /metrics endpoint (SEC-1).
+      - key: METRICS_TOKEN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        value: "https://paper-trail-backend-7h27.onrender.com"
+      - key: CORS_ORIGINS
+        value: "https://paper-trail-frontend-sable.vercel.app,http://localhost:3000"
+      # Fail closed: DEMO_MODE must be set explicitly by the operator (default
+      # is false in code). Never hardcode "true" on a deploy with real keys.
+      - key: DEMO_MODE
+        sync: false
       - key: PORT
         value: "8000"
