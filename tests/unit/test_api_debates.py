@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from paper_trail.api import deps
 from paper_trail.api.routers import debates as debates_router_mod
 from paper_trail.main import app
+from paper_trail.models.debate import Debate, DebateStatus, DebateVerdict
 
 
 class FakeDebate:
@@ -174,7 +175,10 @@ async def test_list_debates(client_with_fake) -> None:
 
 
 async def test_transcript_markdown_happy(client_with_fake) -> None:
+    """Spec 05 case 8 — finished debate → 200 text/markdown, non-empty body."""
     did = await client_with_fake.create("hi", 3)
+    client_with_fake.store[did].status = "done"
+    client_with_fake._status_sequence = []
     async with await _make_client() as c:
         r = await c.get(f"/debates/{did}/transcript.md")
     assert r.status_code == 200
@@ -182,12 +186,116 @@ async def test_transcript_markdown_happy(client_with_fake) -> None:
     assert r.text == "# transcript"
 
 
-async def test_transcript_markdown_missing_404(client_with_fake) -> None:
+@pytest.mark.parametrize("status", ["pending", "running", "error"])
+async def test_transcript_markdown_409_when_unfinished(client_with_fake, status: str) -> None:
+    """Spec 05 case 9 — unfinished debate → 409 {"reason": "not_finished"}.
+
+    409 (not 404) because the resource exists and *will* exist: a client that
+    sees 404 gives up, a client that sees 409 retries. transcript.json already
+    behaves this way; .md used to disagree with both the spec and its sibling.
+    """
     did = await client_with_fake.create("hi", 3)
-    client_with_fake.store[did].transcript_md = None
+    client_with_fake.store[did].status = status
+    client_with_fake._status_sequence = []
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{did}/transcript.md")
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"reason": "not_finished"}
+
+
+async def test_transcript_markdown_404_when_unknown_id(client_with_fake) -> None:
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{uuid4()}/transcript.md")
+    assert r.status_code == 404
+
+
+async def test_transcript_markdown_404_when_done_without_body(client_with_fake) -> None:
+    """A `done` debate with no rendered markdown is a genuine miss, not a retry."""
+    did = await client_with_fake.create("hi", 3)
+    d = client_with_fake.store[did]
+    d.status = "done"
+    d.transcript_md = None
+    client_with_fake._status_sequence = []
     async with await _make_client() as c:
         r = await c.get(f"/debates/{did}/transcript.md")
     assert r.status_code == 404
+
+
+class _RealModelService:
+    """Returns a genuine `Debate` ORM instance instead of `FakeDebate`.
+
+    `FakeDebate.status` is a plain `str`, but the real repository hands the
+    router a `Debate` whose `status` is a `DebateStatus` *enum member*. Every
+    other test in this module therefore compares a string to a string and would
+    stay green even if that equivalence broke.
+    """
+
+    def __init__(self, debate: Debate) -> None:
+        self._debate = debate
+
+    async def get(self, debate_id: UUID) -> Any:
+        return self._debate if debate_id == self._debate.id else None
+
+
+def _real_debate(status: DebateStatus) -> Debate:
+    return Debate(
+        id=uuid4(),
+        claim="the sky is blue",
+        max_rounds=3,
+        status=status,
+        verdict=DebateVerdict.TRUE,
+        confidence=0.9,
+        rounds=[],
+        transcript_md="# transcript",
+    )
+
+
+@pytest.fixture
+def client_with_real_model():
+    """Override the service with one that yields real ORM objects."""
+
+    def _install(debate: Debate) -> Debate:
+        async def _override():
+            yield _RealModelService(debate)
+
+        app.dependency_overrides[deps.get_service] = _override
+        return debate
+
+    yield _install
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("status", [DebateStatus.done, "done"])
+async def test_transcript_markdown_200_for_real_orm_done_status(
+    client_with_real_model, status: DebateStatus | str
+) -> None:
+    """A finished debate must serve its transcript whether status is enum or str.
+
+    Regression guard for the 409 gate added for spec 05 case 9. That gate is
+    `d.status != "done"`, which only behaves because `DebateStatus` is a
+    `StrEnum`. Demote it to a plain `enum.Enum` and the comparison becomes
+    always-True: every finished debate starts answering 409 and `transcript.md`
+    is dead in production, while the fake-service tests above stay green
+    (verified by mutation). Both spellings are pinned here so the invariant is
+    asserted, not assumed.
+    """
+    d = client_with_real_model(_real_debate(status))  # type: ignore[arg-type]
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{d.id}/transcript.md")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert r.text == "# transcript"
+
+
+async def test_transcript_markdown_409_for_real_orm_running_status(
+    client_with_real_model,
+) -> None:
+    """And the gate still closes on a real in-flight debate."""
+    d = client_with_real_model(_real_debate(DebateStatus.running))
+    async with await _make_client() as c:
+        r = await c.get(f"/debates/{d.id}/transcript.md")
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"reason": "not_finished"}
 
 
 async def test_stream_not_found_emits_error_event(client_with_fake, monkeypatch) -> None:

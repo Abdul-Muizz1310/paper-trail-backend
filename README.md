@@ -59,7 +59,7 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - 📄 Cursor-paginated debate history
 - 🔐 Synchronous Ed25519-JWT-authenticated endpoint for bastion integrations (fails closed outside demo mode)
 - 🧾 Ed25519-signed transcript receipts — `transcript.json` carries a signature over the canonical transcript; verify against the key at `GET /platform/receipt-public-key`
-- ⏱️ Redis-backed (Upstash) per-IP rate limiting in front of both debate-creation endpoints
+- ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — the caller is resolved from `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
 - 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline
 - ✅ Red-first TDD — failing test lands before every feature
 - 🚀 Render one-click deploy with auto Alembic migrations
@@ -95,7 +95,7 @@ flowchart TD
     Routers --> Services[services/DebateService]
     Services --> Repos[repositories/DebateRepo]
     Services --> Graph[agents/graph.build_graph]
-    Repos --> DB[(Neon Postgres<br/>async SQLAlchemy + pgvector)]
+    Repos --> DB[(Neon Postgres<br/>async SQLAlchemy + asyncpg)]
     Graph --> Nodes[agents/nodes<br/>plan · proponent · skeptic · judge · render]
     Nodes --> LLM[core/llm<br/>OpenRouter cascade]
     Nodes --> Search[tools/search<br/>Tavily]
@@ -110,33 +110,43 @@ flowchart TD
 
 ```
 src/paper_trail/
-├── main.py                  # FastAPI app factory, middleware, CORS
+├── main.py                  # FastAPI app: logging, middleware, platform routes, routers
 ├── api/
 │   ├── routers/
-│   │   ├── debates.py       # POST/GET /debates, /stream, /transcript.md
-│   │   └── platform.py      # Sync bearer-auth endpoint (3-round cap)
+│   │   ├── debates.py       # POST/GET /debates, /stream, /transcript.md, /transcript.json
+│   │   └── platform.py      # Sync bearer-auth endpoint (3-round cap) + receipt public key
 │   └── deps.py              # FastAPI dependency injection
 ├── services/
 │   └── debates.py           # DebateService — orchestrates repo + graph
 ├── repositories/
-│   └── debates.py           # DebateRepo — async SQLAlchemy CRUD
+│   └── debates.py           # DebateRepo — async SQLAlchemy CRUD + cursor pagination
 ├── models/
-│   └── debate.py            # Debate ORM model (Neon Postgres)
+│   └── debate.py            # Debate ORM model (single `debates` table, JSON rounds)
 ├── schemas/
 │   └── debates.py           # Pydantic v2 HTTP DTOs
 ├── agents/
-│   ├── graph.py             # LangGraph StateGraph assembly
-│   ├── state.py             # DebateState TypedDict + reducers
+│   ├── graph.py             # LangGraph StateGraph assembly (compiled once)
+│   ├── state.py             # DebateState TypedDict + reducers + is_converged
 │   ├── nodes/               # plan · proponent · skeptic · judge · render
-│   ├── tools/               # Tavily, citations, fetch
-│   └── prompts/             # Externalized system prompts (YAML)
-└── core/
-    ├── config.py            # pydantic-settings from .env
-    ├── db.py                # async_sessionmaker + engine
-    ├── llm.py               # OpenRouter client w/ retry
-    ├── langfuse.py          # OTel trace wrapper (graceful no-op)
-    ├── platform.py          # /health, /version, X-Request-ID middleware
-    └── errors.py            # ToolError, LLMError
+│   │                        #   + _citations.py, _format.py (pure helpers)
+│   ├── tools/               # search (Tavily), fetch (Trafilatura), cite, transcript
+│   └── prompts/             # Externalized system prompts (markdown, one per node)
+├── core/
+│   ├── config.py            # pydantic-settings from .env
+│   ├── db.py                # async_sessionmaker + engine + session_scope
+│   ├── llm.py               # OpenRouter client w/ cascade + jittered retry
+│   ├── langfuse.py          # OTel trace wrapper (graceful no-op)
+│   ├── prompts.py           # Loader for agents/prompts/*.md
+│   ├── rate_limit.py        # Upstash fixed-window per-caller throttle
+│   ├── signing.py           # Ed25519 transcript receipt signing
+│   ├── platform_auth.py     # /platform/debate bearer check (fails closed)
+│   └── errors.py            # ToolError, LLMError, InvalidCursorError
+└── platform/                # Cross-cutting platform surface (not business logic)
+    ├── health.py            # /health (real SELECT 1 probe), /version
+    ├── logging.py           # structlog JSON logging
+    ├── metrics.py           # Prometheus /metrics, METRICS_TOKEN gate
+    ├── middleware.py        # CORS + X-Request-ID propagation
+    └── platform_token.py    # X-Platform-Token EdDSA JWT verification
 ```
 
 ---
@@ -148,10 +158,14 @@ src/paper_trail/
 | `POST` | `/debates` | Create a debate; spawns graph as background task. Returns `{debate_id, stream_url}`. |
 | `GET`  | `/debates` | Cursor-paginated list (`limit` 1–100). |
 | `GET`  | `/debates/{id}` | Fetch current state (status, verdict, confidence, rounds). |
-| `GET`  | `/debates/{id}/stream` | 📡 **SSE** — emits `state` per round, `done` at terminal, keepalive pings. |
-| `GET`  | `/debates/{id}/transcript.md` | Deterministic markdown transcript with citations. |
+| `GET`  | `/debates/{id}/stream` | 📡 **SSE** — emits `state` on every change, `ping` keepalives, one `done` at terminal state, `error` for an unknown id. |
+| `GET`  | `/debates/{id}/transcript.md` | Deterministic markdown transcript with citations. `409 {"reason":"not_finished"}` while the debate is still running. |
+| `GET`  | `/debates/{id}/transcript.json` | 🧾 Signed receipt — typed rounds, citations, `transcript_hash`, Ed25519 `signature`. `409` until the debate is `done`. |
 | `POST` | `/platform/debate` | 🔐 Synchronous bearer-auth endpoint. `max_rounds` capped at 3. |
-| `GET`  | `/health` | Liveness probe. |
+| `GET`  | `/platform/receipt-public-key` | Ed25519 public key (PEM) for verifying `transcript.json` signatures. |
+| `GET`  | `/health` | Health probe — always `200`; carries `{status, service, version, commit_sha, db}` where `db` is the result of a live `SELECT 1`. Used as Render's `healthCheckPath`. |
+| `GET`  | `/version` | `{service, version, commit_sha}` — the deployed commit. |
+| `GET`  | `/metrics` | Prometheus exposition. Requires `Authorization: Bearer $METRICS_TOKEN` when that secret is set; public when unset. |
 | `GET`  | `/docs`   | OpenAPI UI. |
 
 ---
@@ -162,13 +176,13 @@ src/paper_trail/
 |---|---|
 | **HTTP** | FastAPI + `sse-starlette` + Prometheus instrumentator |
 | **Agents** | LangGraph (async cyclic StateGraph, parallel branches) |
-| **DB** | Neon Postgres (async SQLAlchemy + asyncpg, pgvector ready) |
+| **DB** | Neon Postgres (async SQLAlchemy + asyncpg). One `debates` table; rounds/evidence are JSON columns |
 | **Migrations** | Alembic, auto-applied via Render `preDeployCommand` |
 | **LLM** | OpenRouter — primary `google/gemini-2.0-flash-001`, fallback `google/gemini-2.5-flash-lite`, jittered exp backoff on 429 |
 | **Search** | Tavily (5 results per sub-question) |
 | **Observability** | LangFuse v3 via OpenTelemetry spans — degrades to no-op on any error |
-| **Cache / Queue** | Upstash Redis (configured, reserved) |
-| **Tests** | pytest-asyncio + Polyfactory + respx + in-memory SQLite |
+| **Cache / Queue** | Upstash Redis — used for rate limiting only. There is **no** evidence/search cache yet |
+| **Tests** | pytest-asyncio + respx (HTTP) + in-memory SQLite; Testcontainers Postgres for the integration tier |
 | **Lint / Types** | ruff (strict) · mypy (strict) |
 
 ---
@@ -244,17 +258,31 @@ curl -N http://localhost:8000/debates/<id>/stream
 ## 🧪 Testing
 
 ```bash
-uv run pytest                                     # full suite
-uv run pytest -m "not slow and not integration"   # fast-only (CI)
+uv run pytest -m "not slow and not integration and not smoke"   # fast tier (CI `test` job)
+uv run pytest -m integration --no-cov                           # Testcontainers Postgres (CI `integration` job)
+PAPER_TRAIL_BASE_URL=https://... uv run pytest -m smoke --no-cov # live deployment (CI `smoke` job)
 uv run pytest --cov=src/paper_trail --cov-report=term-missing
 ```
 
+Three tiers, and CI runs all three:
+
+| Tier | Marker | Needs | CI job |
+|---|---|---|---|
+| Fast | *(default)* | nothing — in-memory SQLite, stubbed HTTP/LLM/DB probes | `test` (also enforces the coverage floor) |
+| Integration | `integration` | Docker (Testcontainers `postgres:16-alpine`) | `integration` |
+| Smoke | `smoke` | `PAPER_TRAIL_BASE_URL` pointing at a live deploy | `smoke` — **skips** when the var is unset, so hosting state can't redden a commit |
+
+The integration tier exists because SQLite cannot reproduce the cross-session
+visibility bug that once shipped behind a green coverage badge; it asserts that a
+committed write from one session is visible to a second, separate session
+against a real Postgres.
+
 | Metric | Value |
 |---|---|
-| **Test count** | 287 tests |
+| **Test count** | 348 tests |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
-| **External I/O** | Fully mocked — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes. No real LLM / Tavily / LangFuse calls in CI. |
+| **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
 
 ---
 
@@ -310,8 +338,16 @@ Render free tier via [`render.yaml`](render.yaml). One-time setup:
    - `TRANSCRIPT_SIGNING_KEY` — Ed25519 private key PEM for signed receipts (optional).
    - `METRICS_TOKEN` — shared bearer secret gating `/metrics` (optional; unset = public).
    - `UPSTASH_REDIS_REST_URL` / `_TOKEN` + `RATE_LIMIT_ENABLED=true` — enable rate limiting.
-3. Copy the Deploy Hook URL → `gh secret set RENDER_DEPLOY_HOOK --body '<url>'`
-4. Push to `main` → CI lint/test/eval/build → CI fires the hook → Render rebuilds → `preDeployCommand: alembic upgrade head` → new container goes live
+3. *(optional)* `gh secret set PAPER_TRAIL_BASE_URL --body '<service url>'` — turns on the
+   post-deploy smoke job. Leave it unset and that job skips instead of failing.
+4. Push to `main` → CI runs lint / test / integration / eval / build → **Render auto-deploys
+   `main` on push** (there is no deploy-hook job; the service watches the branch itself) →
+   `preDeployCommand: alembic upgrade head` → new container goes live → CI's `smoke` job probes
+   `/health` and `/version` on the live host.
+
+The image installs from `uv.lock` (`uv export --frozen` → `pip install --require-hashes`), so the
+deployed dependency set is exactly the one CI resolved and tested — not a fresh resolution of the
+`>=` ranges in `pyproject.toml`.
 
 ---
 

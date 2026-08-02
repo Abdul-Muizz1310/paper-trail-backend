@@ -22,7 +22,7 @@ Five pure async node functions: `plan`, `proponent`, `skeptic`, `judge`, `render
 - `render` produces deterministic markdown given the same state (stable section order).
 - Prompt templates live in `agents/prompts/<name>.md` loaded via `core.prompts.load`.
 
-## Test cases (vcrpy tapes under `tests/fixtures/cassettes/`)
+## Test cases (LLM stubbed per node; HTTP via `respx`)
 
 **plan:**
 1. Valid claim → returns `plan` with ≥1 `sub_question` and ≥1 `search_query`.
@@ -47,6 +47,6 @@ Five pure async node functions: `plan`, `proponent`, `skeptic`, `judge`, `render
 
 ## Acceptance
 
-- Every node has unit test coverage with `vcrpy` for LLM calls and `respx` for HTTP.
+- Every node has unit test coverage. LLM calls are stubbed by monkeypatching the `chat` / `chat_json` name each node module imported from `core.llm`; outbound HTTP is intercepted with `respx`. (No cassette library: the LLM boundary is a typed function, so a fake is cheaper and more precise than a recording.)
 - No node touches the database directly.
 - `NodeError` is a dedicated exception with `node_name` and `reason` attributes.

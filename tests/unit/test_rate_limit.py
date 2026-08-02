@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from paper_trail.core import rate_limit
 from paper_trail.core.config import settings
+
+
+def _request(
+    headers: dict[str, str] | None = None,
+    client: tuple[str, int] | None = ("10.0.0.1", 51234),
+) -> Request:
+    """Build a real Starlette Request so header handling is exercised for real."""
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/debates",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],
+            "client": client,
+        }
+    )
 
 
 class FakeRedis:
@@ -84,10 +99,11 @@ async def test_dependency_uses_client_host(monkeypatch) -> None:  # type: ignore
     fake = FakeRedis()
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: fake)
     dep = rate_limit.rate_limiter("debates")
-    request = SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"))
-    await dep(request)  # type: ignore[arg-type]
+    request = _request(client=("1.2.3.4", 4444))
+    await dep(request)
     with pytest.raises(HTTPException):
-        await dep(request)  # type: ignore[arg-type]
+        await dep(request)
+    assert fake.expired == ["paper-trail:ratelimit:debates:1.2.3.4"]
 
 
 async def test_dependency_handles_missing_client(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -95,7 +111,71 @@ async def test_dependency_handles_missing_client(monkeypatch) -> None:  # type: 
     monkeypatch.setattr(settings, "rate_limit_max_requests", 5)
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: FakeRedis())
     dep = rate_limit.rate_limiter("debates")
-    await dep(SimpleNamespace(client=None))  # type: ignore[arg-type]
+    await dep(_request(client=None))
+
+
+# --------------------------------------------------------------------------
+# Forwarded-header handling (SEC): behind Render's edge proxy every request
+# arrives from the *proxy* socket, so keying purely on request.client.host puts
+# the whole internet into a single bucket — the throttle silently stops being
+# per-caller and one scripted client can lock everyone out (or, with a generous
+# limit, nobody is limited at all).
+# --------------------------------------------------------------------------
+
+
+def test_client_identifier_prefers_forwarded_for_originating_client() -> None:
+    req = _request(
+        {"x-forwarded-for": "203.0.113.5, 70.41.3.18, 150.172.238.178"},
+        client=("10.0.0.1", 51234),
+    )
+    assert rate_limit.client_identifier(req) == "203.0.113.5"
+
+
+def test_client_identifier_tolerates_padding_and_empty_entries() -> None:
+    req = _request({"x-forwarded-for": " ,  198.51.100.7 , 10.0.0.1 "})
+    assert rate_limit.client_identifier(req) == "198.51.100.7"
+
+
+def test_client_identifier_falls_back_to_x_real_ip() -> None:
+    req = _request({"x-real-ip": "198.51.100.42"}, client=("10.0.0.1", 1))
+    assert rate_limit.client_identifier(req) == "198.51.100.42"
+
+
+def test_client_identifier_falls_back_to_socket_peer() -> None:
+    assert rate_limit.client_identifier(_request(client=("192.0.2.9", 1))) == "192.0.2.9"
+
+
+def test_client_identifier_falls_back_to_unknown_without_peer() -> None:
+    assert rate_limit.client_identifier(_request(client=None)) == "unknown"
+
+
+def test_client_identifier_ignores_blank_forwarded_header() -> None:
+    """An empty header must not produce an empty bucket key shared by everyone."""
+    req = _request({"x-forwarded-for": "   ", "x-real-ip": ""}, client=("192.0.2.9", 1))
+    assert rate_limit.client_identifier(req) == "192.0.2.9"
+
+
+async def test_two_clients_behind_one_proxy_get_separate_buckets(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The actual production bug: same proxy socket, different real callers."""
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_max_requests", 1)
+    fake = FakeRedis()
+    monkeypatch.setattr(rate_limit, "_get_redis", lambda: fake)
+    dep = rate_limit.rate_limiter("debates")
+
+    proxy = ("10.0.0.1", 51234)
+    alice = _request({"x-forwarded-for": "203.0.113.5"}, client=proxy)
+    bob = _request({"x-forwarded-for": "203.0.113.9"}, client=proxy)
+
+    await dep(alice)
+    await dep(bob)  # must NOT be throttled by Alice's request
+    with pytest.raises(HTTPException) as ei:
+        await dep(alice)
+    assert ei.value.status_code == 429
+    assert sorted(fake.store) == [
+        "paper-trail:ratelimit:debates:203.0.113.5",
+        "paper-trail:ratelimit:debates:203.0.113.9",
+    ]
 
 
 def test_get_redis_none_when_unconfigured(monkeypatch) -> None:  # type: ignore[no-untyped-def]

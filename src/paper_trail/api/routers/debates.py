@@ -138,7 +138,14 @@ async def get_transcript(
     service: Annotated[DebateService, Depends(get_service)],
 ) -> PlainTextResponse:
     d = await service.get(debate_id)
-    if d is None or not d.transcript_md:
+    if d is None:
+        raise HTTPException(status_code=404, detail="debate not found")
+    # Spec 05 case 9: the transcript of a debate still in flight is *not yet*
+    # there, which is a retry condition (409), not a miss (404). Same contract
+    # as transcript.json, which already answered 409.
+    if d.status != "done":
+        raise HTTPException(status_code=409, detail={"reason": "not_finished"})
+    if not d.transcript_md:
         raise HTTPException(status_code=404, detail="transcript not available")
     return PlainTextResponse(content=d.transcript_md, media_type="text/markdown")
 

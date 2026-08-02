@@ -79,11 +79,42 @@ async def enforce_rate_limit(identifier: str, *, scope: str) -> None:
         )
 
 
+def client_identifier(request: Request) -> str:
+    """Resolve the per-caller throttle key for `request`.
+
+    In production this app sits behind Render's edge proxy, so the TCP peer
+    (``request.client.host``) is the *proxy*, identical for every caller — keying
+    on it alone collapses the whole internet into one bucket, which is not a
+    throttle at all. So prefer the forwarded originating address:
+
+    1. leftmost entry of ``X-Forwarded-For`` (the client the edge saw),
+    2. ``X-Real-IP``,
+    3. the socket peer,
+    4. ``"unknown"`` — never an empty string, which would be a shared bucket.
+
+    Trade-off, stated plainly: forwarded headers are client-supplied, so a
+    determined caller can rotate them to get fresh buckets. That is acceptable
+    here because the limiter exists to cap accidental/scripted spend on the
+    OpenRouter + Tavily fan-out, not to stop a motivated attacker, and the
+    alternative (one global bucket) fails every honest caller instead.
+    """
+    for header in ("x-forwarded-for", "x-real-ip"):
+        raw = request.headers.get(header)
+        if not raw:
+            continue
+        for candidate in raw.split(","):
+            cleaned = candidate.strip()
+            if cleaned:
+                return cleaned
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
 def rate_limiter(scope: str) -> Any:
     """Build a FastAPI dependency that throttles by client IP within `scope`."""
 
     async def _dependency(request: Request) -> None:
-        identifier = request.client.host if request.client else "unknown"
-        await enforce_rate_limit(identifier, scope=scope)
+        await enforce_rate_limit(client_identifier(request), scope=scope)
 
     return _dependency

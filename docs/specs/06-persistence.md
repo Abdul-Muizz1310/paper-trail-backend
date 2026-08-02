@@ -1,8 +1,15 @@
 # Spec 06 — Persistence
 
+> **Scope note (kept honest).** `debate_embeddings` was **descoped before v0.1
+> shipped and does not exist** — no migration creates it, no model maps it, and
+> nothing in `src/` computes an embedding. Cases 9–10 below are struck for the
+> same reason. What ships is a single `debates` table
+> (`alembic/versions/0001_initial_debate_table.py`, extended by
+> `0002_evidence_pool.py`).
+
 ## Goal
 
-Async SQLAlchemy 2.0 models, repositories, and Alembic migrations for `debates` and `debate_embeddings` on Neon Postgres with pgvector.
+Async SQLAlchemy 2.0 models, repositories, and Alembic migrations for `debates` on Neon Postgres.
 
 ## Tables
 
@@ -18,13 +25,19 @@ Async SQLAlchemy 2.0 models, repositories, and Alembic migrations for `debates` 
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`
 
-**debate_embeddings**
-- `id UUID PK`
-- `debate_id UUID FK debates(id) ON DELETE CASCADE`
-- `text TEXT NOT NULL`
-- `embedding VECTOR(1024) NOT NULL`
-- `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
-- Index: `ivfflat (embedding vector_cosine_ops) WITH (lists=100)`
+Added later by `0002_evidence_pool.py` (all nullable, for backward compatibility
+with rows created before it):
+- `evidence_pool JSON NULL` — caller-supplied evidence (spec 08)
+- `rounds_struct JSON NULL` — typed rounds + citations backing `transcript.json`
+- `transcript_hash TEXT NULL` — SHA-256 over the canonical transcript
+
+**debate_embeddings — DESCOPED, does not exist:**
+- ~~`id UUID PK`~~
+- ~~`debate_id UUID FK debates(id) ON DELETE CASCADE`~~
+- ~~`text TEXT NOT NULL`~~
+- ~~`embedding VECTOR(1024) NOT NULL`~~
+- ~~`created_at TIMESTAMPTZ NOT NULL DEFAULT now()`~~
+- ~~Index: `ivfflat (embedding vector_cosine_ops) WITH (lists=100)`~~
 
 ## Repository API
 
@@ -54,11 +67,14 @@ class DebateRepo:
 6. Calling `update_result` on an unknown id raises.
 7. `set_status("error")` transitions a `running` row.
 8. `set_status("running")` on a `done` row raises (monotonic guard).
-9. Inserting into `debate_embeddings` with a 1024-dim vector succeeds.
-10. Cosine similarity query returns nearest neighbor first.
+9. ~~Inserting into `debate_embeddings` with a 1024-dim vector succeeds.~~ **DESCOPED.**
+10. ~~Cosine similarity query returns nearest neighbor first.~~ **DESCOPED.**
+11. A committed write from one session is visible to a second, independent session
+    against a real Postgres (`tests/integration/test_pg_concurrent_sessions.py`).
 
 ## Acceptance
 
 - Initial Alembic migration `0001_initial` under `alembic/versions/`.
-- Enables `vector` extension via `CREATE EXTENSION IF NOT EXISTS vector`.
+- Enables the `vector` extension via `CREATE EXTENSION IF NOT EXISTS vector` —
+  groundwork only; no column uses a vector type.
 - Repositories never touch HTTP or LLM modules.

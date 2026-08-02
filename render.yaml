@@ -3,6 +3,11 @@ services:
     name: paper_trail
     runtime: docker
     plan: free
+    # /health always answers 200 and reports the DB verdict in its `db` field, so
+    # this gate checks "the process is up and serving", not "the DB is reachable".
+    # Deliberate: a transient Neon blip should not make Render tear the instance
+    # down and restart it. Reachability is asserted by CI's post-deploy `smoke`
+    # job, which fails when /health reports db != "ok".
     healthCheckPath: /health
     preDeployCommand: alembic upgrade head
     envVars:
