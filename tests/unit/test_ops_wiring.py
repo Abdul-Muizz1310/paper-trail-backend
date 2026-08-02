@@ -9,7 +9,7 @@ drops the integration job (or the smoke job, or Dependabot) the suite goes red.
 
 The same applies in the other direction: the smoke tier talks to a *live*
 deployment, so it must be excluded from the fast tier and must skip cleanly when
-its base-URL env var is unset. Otherwise a suspended host turns CI red.
+``SMOKE_BASE_URL`` is unset. Otherwise a suspended host turns CI red.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 DEPENDABOT_PATH = REPO_ROOT / ".github" / "dependabot.yml"
 
-SMOKE_URL_ENV = "PAPER_TRAIL_BASE_URL"
+SMOKE_URL_ENV = "SMOKE_BASE_URL"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -115,24 +115,51 @@ def test_ci_has_env_gated_post_deploy_smoke_job() -> None:
     Env-gated on purpose: the free-tier host can be suspended, so an
     unconditional live check would make CI red for reasons unrelated to the
     commit. `tests/smoke/` skips when the var is empty.
+
+    The wiring is pinned in three ways, because each has broken before:
+    the *name* (`SMOKE_BASE_URL`, identical across the portfolio), the *kind*
+    (a repository ``vars.`` reference — a public origin is not a credential and
+    secrets are withheld from fork PRs), and the *shape* (a bare origin; the
+    tests append ``/health`` themselves, so a value carrying a path would
+    produce ``/health/health``).
     """
-    smoke_steps = [
-        step
-        for job in _jobs().values()
+    jobs = _jobs()  # parse once: the leak check below compares step identity
+    smoke_jobs = [
+        (name, job, step)
+        for name, job in jobs.items()
         for step in _steps(job)
         if isinstance(step.get("run"), str)
         and "pytest" in step["run"]
         and "-m smoke" in step["run"].replace('-m "smoke"', "-m smoke")
     ]
-    assert smoke_steps, "no CI step runs `pytest -m smoke`"
-    for step in smoke_steps:
+    assert smoke_jobs, "no CI step runs `pytest -m smoke`"
+    for name, job, step in smoke_jobs:
+        # Push-only: on a pull_request there is no new deploy to probe.
+        assert "github.event_name == 'push'" in str(job.get("if")), (
+            f"smoke job {name!r} must be gated on push events"
+        )
         env = step.get("env") or {}
         assert SMOKE_URL_ENV in env, f"smoke step must pass {SMOKE_URL_ENV}"
         wired = str(env[SMOKE_URL_ENV])
-        assert "secrets." in wired or "vars." in wired, (
-            "smoke target must come from secrets/vars so it can be left unset"
+        assert f"vars.{SMOKE_URL_ENV}" in wired, (
+            f"smoke target must be wired to ${{{{ vars.{SMOKE_URL_ENV} }}}}, got {wired!r}"
+        )
+        assert "secrets." not in wired, (
+            f"smoke target is a public URL, not a secret (fork PRs get no secrets): {wired!r}"
         )
         assert "--no-cov" in step["run"], "smoke pytest run needs --no-cov"
+
+    # ...and no *other* step may receive it. If the fast `test` job also got it,
+    # the smoke tier would stop skipping there and the tier's pass/skip counts —
+    # which the README quotes — would shift.
+    smoke_step_ids = {id(step) for _, _, step in smoke_jobs}
+    leaked = {
+        name: step.get("name") or step.get("run")
+        for name, job in jobs.items()
+        for step in _steps(job)
+        if SMOKE_URL_ENV in (step.get("env") or {}) and id(step) not in smoke_step_ids
+    }
+    assert not leaked, f"{SMOKE_URL_ENV} must only reach the smoke step, leaked into: {leaked}"
 
 
 def test_smoke_tier_skips_when_base_url_unset(

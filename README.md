@@ -260,7 +260,7 @@ curl -N http://localhost:8000/debates/<id>/stream
 ```bash
 uv run pytest -m "not slow and not integration and not smoke"   # fast tier (CI `test` job)
 uv run pytest -m integration --no-cov                           # Testcontainers Postgres (CI `integration` job)
-PAPER_TRAIL_BASE_URL=https://... uv run pytest -m smoke --no-cov # live deployment (CI `smoke` job)
+SMOKE_BASE_URL=https://... uv run pytest -m smoke --no-cov       # live deployment (CI `smoke` job)
 uv run pytest --cov=src/paper_trail --cov-report=term-missing
 ```
 
@@ -270,7 +270,7 @@ Three tiers, and CI runs all three:
 |---|---|---|---|
 | Fast | *(default)* | nothing — in-memory SQLite, stubbed HTTP/LLM/DB probes | `test` (also enforces the coverage floor) |
 | Integration | `integration` | Docker (Testcontainers `postgres:16-alpine`) | `integration` |
-| Smoke | `smoke` | `PAPER_TRAIL_BASE_URL` pointing at a live deploy | `smoke` — **skips** when the var is unset, so hosting state can't redden a commit |
+| Smoke | `smoke` | `SMOKE_BASE_URL` — a bare origin (no trailing slash, no path) pointing at a live deploy | `smoke` — **skips** when the var is unset, so hosting state can't redden a commit |
 
 The integration tier exists because SQLite cannot reproduce the cross-session
 visibility bug that once shipped behind a green coverage badge; it asserts that a
@@ -338,8 +338,11 @@ Render free tier via [`render.yaml`](render.yaml). One-time setup:
    - `TRANSCRIPT_SIGNING_KEY` — Ed25519 private key PEM for signed receipts (optional).
    - `METRICS_TOKEN` — shared bearer secret gating `/metrics` (optional; unset = public).
    - `UPSTASH_REDIS_REST_URL` / `_TOKEN` + `RATE_LIMIT_ENABLED=true` — enable rate limiting.
-3. *(optional)* `gh secret set PAPER_TRAIL_BASE_URL --body '<service url>'` — turns on the
-   post-deploy smoke job. Leave it unset and that job skips instead of failing.
+3. *(optional)* `gh variable set SMOKE_BASE_URL --body '<service origin>'` — turns on the
+   post-deploy smoke job. Leave it unset and that job skips instead of failing. A repository
+   **variable**, not a secret: the value is a public origin, and secrets are withheld from fork
+   PRs. Pass a bare origin (`https://<service>.onrender.com`) — the tests append `/health` and
+   `/version` themselves.
 4. Push to `main` → CI runs lint / test / integration / eval / build → **Render auto-deploys
    `main` on push** (there is no deploy-hook job; the service watches the branch itself) →
    `preDeployCommand: alembic upgrade head` → new container goes live → CI's `smoke` job probes

@@ -91,6 +91,6 @@ addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80"
 markers = [
     "slow: slow end-to-end tests (CI-only)",
     "integration: requires Testcontainers / real Postgres",
-    "smoke: probes a live deployment; skips unless PAPER_TRAIL_BASE_URL is set",
+    "smoke: probes a live deployment; skips unless SMOKE_BASE_URL is set",
 ]
 

@@ -1,8 +1,8 @@
 """Post-deploy smoke tier — probes a *live* deployment.
 
-Runs only when ``PAPER_TRAIL_BASE_URL`` is set (see ``live_target``); otherwise
-every test here skips, so CI stays green while the host is suspended or the
-secret is unconfigured. Marked ``smoke`` and deselected from the fast tier.
+Runs only when ``SMOKE_BASE_URL`` is set (see ``live_target``); otherwise every
+test here skips, so CI stays green while the host is suspended or the repository
+variable is unconfigured. Marked ``smoke`` and deselected from the fast tier.
 
 What it is for: catching the class of failure unit tests structurally cannot —
 the container booted but cannot reach Postgres, the wrong image is live, or the

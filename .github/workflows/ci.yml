@@ -70,19 +70,27 @@ jobs:
       - run: docker build -t ${{ github.repository }}:${{ github.sha }} .
 
   # Post-deploy gate. Render auto-deploys main on push, so this runs after the
-  # image builds and probes the live host. Env-gated: with the
-  # PAPER_TRAIL_BASE_URL secret unset (or the service parked) the tier SKIPS
-  # instead of failing, so hosting state can never redden an unrelated commit.
+  # image builds and probes the live host. Env-gated: with the SMOKE_BASE_URL
+  # repository variable unset (or the service parked) the tier SKIPS instead of
+  # failing, so hosting state can never redden an unrelated commit.
+  #
+  # SMOKE_BASE_URL is a repository *variable*, not a secret: the value is a
+  # public origin (e.g. https://paper-trail-backend-jjpf.onrender.com), and
+  # secrets are unavailable to fork PRs. It is a bare origin with no trailing
+  # slash and no path — tests/smoke/ appends /health and /version itself.
+  #
+  # It is deliberately passed to this job only. The `test` job leaves it unset,
+  # which is what keeps the smoke tier out of the fast tier's counted results.
   smoke:
     needs: [build, integration]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - run: uv python install 3.12
       - run: uv sync --frozen --all-extras
-      - name: post-deploy smoke (skips when PAPER_TRAIL_BASE_URL is unset)
+      - name: post-deploy smoke (skips when SMOKE_BASE_URL is unset)
         env:
-          PAPER_TRAIL_BASE_URL: ${{ secrets.PAPER_TRAIL_BASE_URL }}
+          SMOKE_BASE_URL: ${{ vars.SMOKE_BASE_URL }}
         run: uv run pytest -m smoke --no-cov -rs
