@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
       - run: uv sync --frozen --all-extras
       - run: uv run ruff check .
@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
       - run: uv sync --frozen --all-extras
       - run: uv run pytest -m "not slow and not integration and not smoke"
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest # ubuntu runners ship a working Docker daemon
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
       - run: uv sync --frozen --all-extras
       # --no-cov: pyproject addopts inject --cov-fail-under=80, and this tier
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
       - run: uv sync --frozen --all-extras
       # Ship-gate smoke check: the deterministic dry-run (no LLM, no network)
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
       - run: uv sync --frozen --all-extras
       - name: post-deploy smoke (skips when SMOKE_BASE_URL is unset)
