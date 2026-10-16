@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import datetime as dt
 from typing import Any
 from uuid import UUID, uuid4
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
 
 from paper_trail.api import deps
 from paper_trail.core import platform_auth
 from paper_trail.main import app
+from paper_trail.platform import platform_token
 
 
 class FakePlatformDebate:
@@ -223,3 +229,61 @@ async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatc
         )
     assert r.status_code == 500
     assert "disappeared" in r.json()["detail"]
+
+
+def _keypair() -> tuple[str, str]:
+    priv = Ed25519PrivateKey.generate()
+    priv_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    pub_der = priv.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return priv_pem, base64.b64encode(pub_der).decode()
+
+
+def _signed(priv_pem: str, *, sub: str, role: str) -> str:
+    return jwt.encode(
+        {
+            "sub": sub,
+            "role": role,
+            "service": "paper-trail",
+            "exp": dt.datetime.now(dt.UTC) + dt.timedelta(seconds=60),
+        },
+        priv_pem,
+        algorithm="EdDSA",
+    )
+
+
+async def test_platform_debate_rejects_frontend_token(fake_service, monkeypatch) -> None:
+    """Spec 09: a frontend-key token passes the middleware but not /platform/debate."""
+    monkeypatch.setattr(platform_auth.settings, "demo_mode", False)
+    bastion_priv, bastion_pub = _keypair()
+    frontend_priv, frontend_pub = _keypair()
+    monkeypatch.setenv("BASTION_SIGNING_KEY_PUBLIC", bastion_pub)
+    monkeypatch.setenv("PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC", frontend_pub)
+    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
+    platform_token.reset_public_key_cache()
+    frontend = _signed(frontend_priv, sub="paper-trail-frontend", role="frontend")
+    bastion = _signed(bastion_priv, sub="bastion", role="admin")
+
+    async with await _client() as c:
+        rejected = await c.post(
+            "/platform/debate",
+            json={"claim": "x"},
+            headers={"X-Platform-Token": frontend, "Authorization": f"Bearer {frontend}"},
+        )
+        accepted = await c.post(
+            "/platform/debate",
+            json={"claim": "x"},
+            headers={"X-Platform-Token": bastion, "Authorization": f"Bearer {bastion}"},
+        )
+
+    assert rejected.status_code == 401
+    # The endpoint's envelope, not the middleware's: the middleware let it through.
+    assert rejected.json() == {"detail": "invalid platform token"}
+    assert accepted.status_code == 200
+    assert len(fake_service.create_called_with) == 1

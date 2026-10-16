@@ -70,6 +70,66 @@ def test_non_demo_honors_valid_and_rejects_bad_token(monkeypatch) -> None:  # ty
     assert platform_auth.verify_platform_token("not-a-jwt") is False
 
 
+_FRONTEND_ENV = "PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC"
+
+
 @pytest.fixture(autouse=True)
-def _clean_cache() -> None:
+def _clean_cache(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv(_FRONTEND_ENV, raising=False)
     platform_token.reset_public_key_cache()
+
+
+# ─── /platform/debate stays bastion-only (docs/specs/09-platform-token.md) ────
+
+
+def _frontend_token(priv_pem: str) -> str:
+    """A valid paper-trail-frontend token: right service, right role, live exp."""
+    return jwt.encode(
+        {
+            "sub": "paper-trail-frontend",
+            "role": "frontend",
+            "service": "paper-trail",
+            "exp": dt.datetime.now(dt.UTC) + dt.timedelta(seconds=60),
+        },
+        priv_pem,
+        algorithm="EdDSA",
+    )
+
+
+def test_frontend_token_rejected_by_platform_verifier(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A frontend-key token is never a bearer for /platform/debate."""
+    monkeypatch.setattr(settings, "demo_mode", False)
+    bastion_priv, bastion_pub = _keypair()
+    frontend_priv, frontend_pub = _keypair()
+    monkeypatch.setenv("BASTION_SIGNING_KEY_PUBLIC", bastion_pub)
+    monkeypatch.setenv(_FRONTEND_ENV, frontend_pub)
+    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
+    platform_token.reset_public_key_cache()
+
+    assert platform_auth.verify_platform_token(_frontend_token(frontend_priv)) is False
+    bastion = jwt.encode(
+        {"sub": "bastion", "exp": dt.datetime.now(dt.UTC) + dt.timedelta(seconds=60)},
+        bastion_priv,
+        algorithm="EdDSA",
+    )
+    assert platform_auth.verify_platform_token(bastion) is True
+
+
+def test_only_frontend_key_platform_verifier_fails_closed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(settings, "demo_mode", False)
+    frontend_priv, frontend_pub = _keypair()
+    monkeypatch.delenv("BASTION_SIGNING_KEY_PUBLIC", raising=False)
+    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
+    monkeypatch.setenv(_FRONTEND_ENV, frontend_pub)
+    platform_token.reset_public_key_cache()
+    assert platform_auth.verify_platform_token(_frontend_token(frontend_priv)) is False
+
+
+def test_bastion_token_without_exp_rejected_by_platform_verifier(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(settings, "demo_mode", False)
+    bastion_priv, bastion_pub = _keypair()
+    monkeypatch.setenv("BASTION_SIGNING_KEY_PUBLIC", bastion_pub)
+    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
+    platform_token.reset_public_key_cache()
+    no_exp = jwt.encode({"sub": "bastion"}, bastion_priv, algorithm="EdDSA")
+    assert platform_auth.verify_platform_token(no_exp) is False
