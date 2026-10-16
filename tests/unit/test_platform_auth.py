@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import time
 
 import jwt
 import pytest
@@ -133,3 +134,33 @@ def test_bastion_token_without_exp_rejected_by_platform_verifier(monkeypatch) ->
     platform_token.reset_public_key_cache()
     no_exp = jwt.encode({"sub": "bastion"}, bastion_priv, algorithm="EdDSA")
     assert platform_auth.verify_platform_token(no_exp) is False
+
+
+# (iat offset, exp offset, accepted) — the 10 s clock-skew leeway, spec 09.
+_SKEW_CASES = {
+    "iat-5s-ahead": (5, 65, True),
+    "iat-30s-ahead": (30, 90, False),
+    "exp-5s-ago": (-65, -5, True),
+    "exp-30s-ago": (-90, -30, False),
+}
+
+
+@pytest.mark.parametrize(
+    ("iat_offset_s", "exp_offset_s", "accepted"), _SKEW_CASES.values(), ids=_SKEW_CASES.keys()
+)
+def test_platform_verifier_clock_skew_leeway(  # type: ignore[no-untyped-def]
+    monkeypatch, iat_offset_s: int, exp_offset_s: int, accepted: bool
+) -> None:
+    """The /platform/debate bearer check shares the 10 s leeway on iat and exp."""
+    monkeypatch.setattr(settings, "demo_mode", False)
+    bastion_priv, bastion_pub = _keypair()
+    monkeypatch.setenv("BASTION_SIGNING_KEY_PUBLIC", bastion_pub)
+    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
+    platform_token.reset_public_key_cache()
+    now = int(time.time())
+    token = jwt.encode(
+        {"sub": "bastion", "iat": now + iat_offset_s, "exp": now + exp_offset_s},
+        bastion_priv,
+        algorithm="EdDSA",
+    )
+    assert platform_auth.verify_platform_token(token) is accepted

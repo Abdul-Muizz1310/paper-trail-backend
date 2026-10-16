@@ -20,7 +20,7 @@ frontend role. `POST /platform/debate` stays bastion-only.
 |---|---|---|
 | key | `BASTION_SIGNING_KEY_PUBLIC` (base64 SPKI DER) or the cached `BASTION_PUBLIC_KEY_URL` fetch | `PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC` (base64 SPKI DER), env only, no URL fetch |
 | `alg` | `EdDSA` | `EdDSA` |
-| `exp` | required, in the future | required, in the future |
+| `exp` | required, in the future (10 s leeway) | required, in the future (10 s leeway) |
 | claims checked | none beyond `exp` | `service == "paper-trail"` and `role == "frontend"` |
 | accepted by the middleware | yes | yes |
 | accepted by `POST /platform/debate` (`Authorization: Bearer`) | yes | **no** |
@@ -28,8 +28,9 @@ frontend role. `POST /platform/debate` stays bastion-only.
 Frontend tokens look like
 `{"alg":"EdDSA","typ":"JWT","kid":"paper-trail-frontend-2026-10"}` /
 `{"sub":"paper-trail-frontend","role":"frontend","service":"paper-trail","iat":…,"exp":iat+60,"jti":…}`.
-`kid`, `sub`, `jti` are not checked. No leeway is applied to `exp` or `iat`,
-matching the bastion path.
+`kid`, `sub`, `jti` are not checked. Both paths, and the `/platform/debate`
+bearer check, allow a **10 s leeway** on `exp` and `iat` (see the 2026-10-16
+note below).
 
 ## Invariants
 
@@ -58,6 +59,14 @@ matching the bastion path.
    the middleware and in `verify_platform_jwt`. bastion's minter
    (`bastion/src/lib/gateway/jwt.ts`) always sets `exp` to 60 s.
 
+**2026-10-16 — clock skew.** Tokens are minted on Vercel (frontend) or bastion
+and verified on Render, and PyJWT rejects an `iat` in the future, so a minter
+clock even a second ahead of this host's would 401 a fresh token. Every decode
+(middleware, both minters, and `verify_platform_jwt`, which shares it) now uses
+`leeway=10`: an `iat` up to 10 s ahead and an `exp` up to 10 s past are
+accepted; beyond that the token is rejected. Against a 60 s lifetime this
+widens the replay window by at most 10 s.
+
 ## Test cases
 
 Middleware, pass:
@@ -84,11 +93,18 @@ Middleware, failure:
       → one warning naming the variable and not containing the value; bastion
       tokens still accepted; with no bastion key the middleware fails open.
 
+Clock skew (middleware, both minters):
+
+- [x] `iat` 5 s in the future → 200; `iat` 30 s in the future → 401.
+- [x] `exp` 5 s in the past → 200; `exp` 30 s in the past → 401.
+
 `/platform/debate`:
 
 - [x] `verify_platform_token` rejects a frontend-key token with both keys
       configured, and fails closed with only the frontend key configured.
 - [x] `verify_platform_token` rejects a bastion token without `exp`.
+- [x] `verify_platform_token` with bastion tokens: `iat` 5 s ahead and `exp`
+      5 s past accepted; `iat` 30 s ahead and `exp` 30 s past rejected.
 - [x] Composed: with both keys configured, a frontend token in both
       `X-Platform-Token` and `Authorization` gets 401 from the endpoint; a
       bastion token in both gets 200.
