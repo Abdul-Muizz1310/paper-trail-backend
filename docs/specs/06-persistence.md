@@ -72,6 +72,38 @@ class DebateRepo:
 11. A committed write from one session is visible to a second, independent session
     against a real Postgres (`tests/integration/test_pg_concurrent_sessions.py`).
 
+## Deploy-time migrations (2026-10-20)
+
+`render.yaml` ran `alembic upgrade head` as a `preDeployCommand`, but the service is on Render's free
+plan, which does not run pre-deploy commands (they need a paid instance), so no deploy ever applied
+a migration and the README's "auto-applied" claim was false. The container itself now applies them,
+mirroring inkprint-backend:
+
+- `docker-entrypoint.sh` is the image's `ENTRYPOINT`; the `CMD` (uvicorn, exec form) is unchanged
+  and the entrypoint `exec`s it, so uvicorn stays PID 1 and receives Render's signals.
+- With a Postgres `DATABASE_URL` (`postgres://`, `postgresql://`, `postgresql+<driver>://`) it runs
+  `alembic upgrade head` first. Alembic records the applied revision in `alembic_version`, so the
+  step runs on every boot and is a no-op at head (review focus: a migration that runs twice).
+- Any other `DATABASE_URL`, or none, skips Alembic: the migrations are Postgres-targeted, and the
+  fast tier's SQLite never runs them.
+- A failed migration aborts the boot (`set -e`) and the CMD never starts: Render keeps the previous
+  deploy serving instead of a new one running against an un-migrated schema.
+- `render.yaml` carries no `preDeployCommand` while `plan: free`.
+
+Cases:
+
+- **M1** (`tests/unit/test_deploy_entrypoint.py`, a stub `alembic` on `PATH`) a
+  `postgresql+asyncpg://` URL runs `alembic upgrade head`, then the CMD; so do `postgres://` and
+  `postgresql://`.
+- **M2** an unset, empty or `sqlite+aiosqlite://` URL skips Alembic and still runs the CMD.
+- **M3** a failing `alembic` exits non-zero and the CMD never runs.
+- **M4** the CMD's arguments reach it unchanged (`exec "$@"`).
+- **M5** the Dockerfile copies the entrypoint and declares it as `ENTRYPOINT` with an exec-form
+  `CMD`; `render.yaml` on `plan: free` has no `preDeployCommand`.
+- **M6** (`tests/integration/test_migrations_pg.py`, Testcontainers `pgvector/pgvector:pg16`)
+  `alembic upgrade head` against an empty Postgres creates `debates` with every model column and
+  stamps the head revision; a second run succeeds and changes nothing.
+
 ## Acceptance
 
 - Initial Alembic migration `0001_initial` under `alembic/versions/`.

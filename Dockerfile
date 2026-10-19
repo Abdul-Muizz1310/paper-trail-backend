@@ -12,6 +12,8 @@ RUN pip install --no-cache-dir uv==0.9.17
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY src ./src
 COPY alembic ./alembic
+COPY docker-entrypoint.sh ./
+RUN chmod +x ./docker-entrypoint.sh
 
 # --frozen: fail rather than silently re-lock if uv.lock is stale.
 # --require-hashes: the exported pins carry hashes, so a swapped artifact fails
@@ -24,6 +26,9 @@ RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt
 
 EXPOSE 8000
+# Render's free plan never runs a preDeployCommand, so the entrypoint applies
+# Alembic migrations before it execs the CMD (spec 06, deploy-time migrations).
+ENTRYPOINT ["./docker-entrypoint.sh"]
 # --proxy-headers + --forwarded-allow-ips: the container is only reachable
 # through Render's edge proxy, so without these every request's peer address is
 # the proxy and per-IP logic (rate limiting, logs) sees one caller for the whole

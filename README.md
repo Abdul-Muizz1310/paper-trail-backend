@@ -62,7 +62,7 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — the caller is resolved from `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
 - 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline; a JSON reply the schema cannot read also falls through to the fallback (a fenced or one-element-array reply is unwrapped first)
 - ✅ Red-first TDD — failing test lands before every feature
-- 🚀 Render one-click deploy with auto Alembic migrations
+- 🚀 Render one-click deploy; the container entrypoint runs `alembic upgrade head` on every boot (a no-op at head; a failed migration aborts the boot)
 
 ---
 
@@ -177,7 +177,7 @@ src/paper_trail/
 | **HTTP** | FastAPI + `sse-starlette` + Prometheus instrumentator |
 | **Agents** | LangGraph (async cyclic StateGraph, parallel branches) |
 | **DB** | Neon Postgres (async SQLAlchemy + asyncpg). One `debates` table; rounds/evidence are JSON columns |
-| **Migrations** | Alembic, auto-applied via Render `preDeployCommand` |
+| **Migrations** | Alembic, applied by `docker-entrypoint.sh` on every container boot (Render's free plan never runs a `preDeployCommand`) |
 | **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast `minimax/minimax-m3.1-flash:free`, fallback `google/gemma-4-31b-it:free` (code defaults; `OPENROUTER_MODEL_*` override), jittered exp backoff on 429 |
 | **Search** | Tavily (5 results per sub-question) |
 | **Observability** | LangFuse v3 via OpenTelemetry spans — degrades to no-op on any error |
@@ -279,7 +279,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 402 tests (399 fast, 1 integration, 2 smoke) |
+| **Test count** | 412 tests (408 fast, 2 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
@@ -345,7 +345,7 @@ Render free tier via [`render.yaml`](render.yaml). One-time setup:
    `/version` themselves.
 4. Push to `main` → CI runs lint / test / integration / eval / build → **Render auto-deploys
    `main` on push** (there is no deploy-hook job; the service watches the branch itself) →
-   `preDeployCommand: alembic upgrade head` → new container goes live → CI's `smoke` job probes
+   the container's entrypoint runs `alembic upgrade head`, then starts uvicorn → new container goes live → CI's `smoke` job probes
    `/health` and `/version` on the live host.
 
 The image installs from `uv.lock` (`uv export --frozen` → `pip install --require-hashes`), so the
