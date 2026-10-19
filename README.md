@@ -269,7 +269,7 @@ Three tiers, and CI runs all three:
 | Tier | Marker | Needs | CI job |
 |---|---|---|---|
 | Fast | *(default)* | nothing — in-memory SQLite, stubbed HTTP/LLM/DB probes | `test` (also enforces the coverage floor) |
-| Integration | `integration` | Docker (Testcontainers `postgres:16-alpine`) | `integration` |
+| Integration | `integration` | Docker (Testcontainers `postgres:16-alpine`, and `pgvector/pgvector:pg16` for the migration chain) | `integration` |
 | Smoke | `smoke` | `SMOKE_BASE_URL` — a bare origin (no trailing slash, no path) pointing at a live deploy | `smoke` — **skips** when the var is unset, so hosting state can't redden a commit |
 
 The integration tier exists because SQLite cannot reproduce the cross-session
