@@ -37,6 +37,35 @@ Cases (`tests/unit/test_config.py`):
 - **D3** each `OPENROUTER_MODEL_*` variable still overrides its slot.
 - **D4** `_resolve_model` maps `primary`/`fast`/`fallback` to the configured slot (existing router tests).
 
+### JSON replies from the free models (2026-10-20)
+
+The first live debate on the free models failed in its plan node: `google/gemma-4-26b-a4b-it:free`
+honoured JSON mode but answered `[{"sub_questions": [...], "search_queries": [...]}]`, the object
+wrapped in a one-element array, and `PlanSchema.model_validate(list)` raised `schema_mismatch`. The
+whole debate went to `error` on one call, and the fallback was never asked, because only transport
+and HTTP failures fell through to it.
+
+`chat_json` now parses a reply in one pure step (`parse_json_reply`) and treats an unusable reply
+like a failed tier:
+
+- a reply fenced as ` ```json … ``` ` (or bare ` ``` `) is unwrapped before parsing;
+- a top-level array holding exactly one JSON object is that object;
+- anything else is parsed as is: invalid JSON → `LLMError("invalid_json")`, a shape the schema
+  rejects (including an empty array, an array of two objects, an array of non-objects) →
+  `LLMError("schema_mismatch")`; it never guesses which of several objects was meant;
+- when the primary tier's reply is unusable (or the call fails), the fallback tier is asked once;
+  its reply goes through the same parse, and its failure is the one raised.
+
+Cases (`tests/unit/test_llm_router.py`):
+
+- **J1** a one-element array holding the object validates as that object (the live failure).
+- **J2** a ` ```json ` fenced object validates; so does a bare ` ``` ` fence.
+- **J3** an unusable primary reply (invalid JSON, schema mismatch, a two-object array) asks the
+  fallback once and returns the fallback's valid reply.
+- **J4** both replies unusable → `LLMError` with the fallback's stage (`invalid_json` or
+  `schema_mismatch`).
+- **J5** `[]`, `[1]` and `[{…}, {…}]` are `schema_mismatch`, never unwrapped.
+
 ## Invariants
 
 - All calls go through the OpenRouter `/chat/completions` endpoint at `OPENROUTER_BASE_URL`.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 from typing import Any, Literal, TypedDict
 
 import httpx
@@ -25,6 +26,10 @@ _RATE_LIMIT_JITTER_S = 0.75
 
 
 ModelTier = Literal["primary", "fast", "fallback"]
+
+
+# A whole reply wrapped in a Markdown code fence, with or without a language tag.
+_FENCED = re.compile(r"^```[A-Za-z]*\s*(.*?)\s*```$", re.DOTALL)
 
 
 class ChatMessage(TypedDict):
@@ -159,18 +164,48 @@ async def chat(
             ) from fallback_err
 
 
-async def chat_json(
+def parse_json_reply[SchemaT: BaseModel](raw: str, schema: type[SchemaT]) -> SchemaT:
+    """Parse a JSON-mode reply into ``schema`` (spec 04, "JSON replies from the free models").
+
+    Tolerates the two shapes free models send instead of a bare object: a reply
+    fenced as a Markdown code block, and the object wrapped in a one-element
+    array. Anything else is parsed as is and must match ``schema``; it never
+    guesses between several objects.
+    """
+    text = raw.strip()
+    fenced = _FENCED.match(text)
+    if fenced is not None:
+        text = fenced.group(1)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise LLMError("invalid_json", str(e)) from e
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        data = data[0]
+    try:
+        return schema.model_validate(data)
+    except ValidationError as e:
+        raise LLMError("schema_mismatch", str(e)) from e
+
+
+async def chat_json[SchemaT: BaseModel](
     messages: list[ChatMessage],
-    schema: type[BaseModel],
+    schema: type[SchemaT],
     *,
     model: ModelTier = "primary",
     temperature: float = 0.2,
-) -> Any:
-    """Call OpenRouter in JSON mode and validate against a Pydantic schema."""
+) -> SchemaT:
+    """Call OpenRouter in JSON mode and validate against a Pydantic schema.
+
+    An unusable reply from the first tier (one ``parse_json_reply`` rejects)
+    counts as a failed tier, like a 429 or a 5xx: the fallback tier is asked
+    once, and its failure is the one raised.
+    """
     try:
         raw = await _one_call_with_retry(
             messages, _resolve_model(model), temperature, json_mode=True
         )
+        return parse_json_reply(raw, schema)
     except LLMError:
         raw = await _one_call_with_retry(
             messages,
@@ -178,11 +213,4 @@ async def chat_json(
             temperature,
             json_mode=True,
         )
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise LLMError("invalid_json", str(e)) from e
-    try:
-        return schema.model_validate(data)
-    except ValidationError as e:
-        raise LLMError("schema_mismatch", str(e)) from e
+        return parse_json_reply(raw, schema)

@@ -231,3 +231,93 @@ async def test_chat_uses_fast_tier_when_requested() -> None:
     respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp("fast-tier")))
     out = await llm_mod.chat([{"role": "user", "content": "q"}], model="fast")
     assert out == "fast-tier"
+
+
+# ---------------------------------------------------------------------------
+# JSON replies from the free models (spec 04, 2026-10-20)
+# ---------------------------------------------------------------------------
+
+_PLAN_LIKE = '{"answer": "yes", "score": 3}'
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        f"[{_PLAN_LIKE}]",
+        f"```json\n{_PLAN_LIKE}\n```",
+        f"```\n{_PLAN_LIKE}\n```",
+        f"  ```json\n[{_PLAN_LIKE}]\n```  ",
+    ],
+    ids=["J1-one-element-array", "J2-json-fence", "J2-bare-fence", "J1+J2-fenced-array"],
+)
+def test_parse_json_reply_accepts_the_shapes_free_models_send(reply: str) -> None:
+    result = llm_mod.parse_json_reply(reply, _Schema)
+    assert result == _Schema(answer="yes", score=3)
+
+
+@pytest.mark.parametrize(
+    ("reply", "stage"),
+    [
+        ("[]", "schema_mismatch"),
+        ("[1]", "schema_mismatch"),
+        (f"[{_PLAN_LIKE}, {_PLAN_LIKE}]", "schema_mismatch"),
+        ('{"wrong": "field"}', "schema_mismatch"),
+        ("not json at all", "invalid_json"),
+        ("```json\nnot json\n```", "invalid_json"),
+    ],
+    ids=["J5-empty", "J5-non-object", "J5-two-objects", "mismatch", "invalid", "fenced-invalid"],
+)
+def test_parse_json_reply_rejects_what_it_cannot_read(reply: str, stage: str) -> None:
+    with pytest.raises(LLMError) as exc:
+        llm_mod.parse_json_reply(reply, _Schema)
+    assert exc.value.stage == stage
+
+
+@respx.mock
+async def test_j1_chat_json_unwraps_the_live_plan_reply_without_a_fallback() -> None:
+    route = respx.post(_chat_url()).mock(
+        return_value=httpx.Response(200, json=_resp(f"[{_PLAN_LIKE}]"))
+    )
+    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    assert result == _Schema(answer="yes", score=3)
+    assert route.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "bad_primary",
+    ["not json", '{"wrong": "field"}', f"[{_PLAN_LIKE}, {_PLAN_LIKE}]"],
+    ids=["invalid-json", "schema-mismatch", "two-objects"],
+)
+@respx.mock
+async def test_j3_unusable_primary_reply_asks_the_fallback_once(bad_primary: str) -> None:
+    models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        models.append(_json.loads(request.content)["model"])
+        reply = bad_primary if len(models) == 1 else _PLAN_LIKE
+        return httpx.Response(200, json=_resp(reply))
+
+    respx.post(_chat_url()).mock(side_effect=handler)
+    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    assert result == _Schema(answer="yes", score=3)
+    assert models == [settings.openrouter_model_primary, settings.openrouter_model_fallback]
+
+
+@pytest.mark.parametrize(
+    ("fallback_reply", "stage"),
+    [("still not json", "invalid_json"), ('{"wrong": 1}', "schema_mismatch")],
+)
+@respx.mock
+async def test_j4_both_replies_unusable_raises_the_fallbacks_stage(
+    fallback_reply: str, stage: str
+) -> None:
+    replies = iter(['{"wrong": "field"}', fallback_reply])
+    route = respx.post(_chat_url()).mock(
+        side_effect=lambda _req: httpx.Response(200, json=_resp(next(replies)))
+    )
+    with pytest.raises(LLMError) as exc:
+        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    assert exc.value.stage == stage
+    assert route.call_count == 2

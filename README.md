@@ -60,7 +60,7 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - 🔐 Synchronous Ed25519-JWT-authenticated endpoint for bastion integrations (fails closed outside demo mode)
 - 🧾 Ed25519-signed transcript receipts — `transcript.json` carries a signature over the canonical transcript; verify against the key at `GET /platform/receipt-public-key`
 - ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — the caller is resolved from `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
-- 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline
+- 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline; a JSON reply the schema cannot read also falls through to the fallback (a fenced or one-element-array reply is unwrapped first)
 - ✅ Red-first TDD — failing test lands before every feature
 - 🚀 Render one-click deploy with auto Alembic migrations
 
@@ -279,7 +279,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 385 tests (382 fast, 1 integration, 2 smoke) |
+| **Test count** | 402 tests (399 fast, 1 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |

@@ -244,3 +244,27 @@ async def test_plan_empty_pool_treated_as_absent(monkeypatch) -> None:  # type: 
     )
     user_msg = captured_messages[0][-1]["content"]
     assert user_msg == "Decompose this claim: c"
+
+
+async def test_plan_composed_with_the_router_reads_the_live_array_reply(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Spec 04 J1, composed: the real chat_json over HTTP (respx), not a stub.
+
+    The 2026-10-20 live debate died here: gemma-4-26b wrapped the plan object in
+    a one-element array and the node raised schema_mismatch.
+    """
+    import httpx
+    import respx
+
+    from paper_trail.core.config import settings
+
+    reply = '[{"sub_questions": ["Does water boil at 100 C at 1 atm?"], "search_queries": []}]'
+    with respx.mock:
+        route = respx.post(f"{settings.openrouter_base_url}/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"role": "assistant", "content": reply}}]}
+            )
+        )
+        out = await plan_mod.plan({"claim": "c", "max_rounds": 2, "round": 0, "rounds": []})
+    assert route.call_count == 1
+    assert out["plan"]["sub_questions"] == ["Does water boil at 100 C at 1 atm?"]
+    assert out["plan"]["search_queries"] == []
