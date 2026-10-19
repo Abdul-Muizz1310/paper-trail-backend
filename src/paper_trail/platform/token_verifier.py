@@ -44,10 +44,6 @@ class Principal:
     role: str
     aud: str
 
-    @property
-    def rate_limit_key(self) -> str:
-        return f"{self.iss}:{self.sub}"
-
 
 class TokenRejectedError(Exception):
     """A present token failed ``check`` (a name safe to log; never the token)."""

@@ -59,7 +59,7 @@ of this file were not:
 | `core/llm.py` | `chat()`, `chat_json()` | OpenRouter client, primary→fast→fallback cascade, jittered backoff on 429 | Everything above |
 | `core/langfuse.py` | `span()`, `trace()`, `update_current_*` | LangFuse/OTel tracing wrapper; degrades to a no-op on any error | Everything above |
 | `core/prompts.py` | `load()` | Reads `agents/prompts/*.md` | Everything above |
-| `core/rate_limit.py` | `bucket_key()`, `client_identifier()`, `enforce_rate_limit()`, `rate_limiter()` | Upstash fixed-window per-caller throttle (fail-open); bucket `iss:sub` once authenticated | Everything above |
+| `core/rate_limit.py` | `bucket_key()`, `client_identifier()`, `enforce_rate_limit()`, `rate_limiter()` | Upstash fixed-window per-caller throttle (fail-open); bucket `bastion:{sub}`, `paper-trail-frontend:{address}`, or the address | Everything above |
 | `core/signing.py` | `sign_transcript()`, `public_key_pem()`, `verify_transcript_signature()` | Ed25519 receipt signatures | Everything above |
 | `core/errors.py` | `LLMError`, `ToolError`, `InvalidCursorError` | Typed failure vocabulary | Everything |
 | `platform/health.py` | `install_health_routes()` | `GET /health` (with a real `SELECT 1` probe) and `GET /version` | Business logic |

@@ -346,32 +346,46 @@ async def test_13_every_public_route_answers_without_a_token(
         assert head.status_code == 405
 
 
-async def test_14_rate_limit_key_is_iss_sub_for_an_authenticated_request(
-    app: FastAPI, keys: Keys, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[tuple[str, str]] = []
+async def _buckets(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, requests: list[dict[str, str]]
+) -> list[str]:
+    """POST /debates once per header set; return the rate-limit identifier each one used."""
+    seen: list[str] = []
 
     async def _capture(identifier: str, *, scope: str) -> None:
-        seen.append((identifier, scope))
+        assert scope == "debates"
+        seen.append(identifier)
 
     monkeypatch.setattr(rate_limit, "enforce_rate_limit", _capture)
-    headers = {"X-Forwarded-For": "203.0.113.5"}
     async with _client(app) as c:
-        bastion = await c.post(
-            "/debates",
-            json={"claim": "x", "max_rounds": 2},
-            headers={**headers, "X-Platform-Token": keys.bastion_token()},
-        )
-        frontend = await c.post(
-            "/debates",
-            json={"claim": "x", "max_rounds": 2},
-            headers={**headers, "X-Platform-Token": keys.frontend_token()},
-        )
-    assert (bastion.status_code, frontend.status_code) == (201, 201)
+        for headers in requests:
+            response = await c.post(
+                "/debates", json={"claim": "x", "max_rounds": 2}, headers=headers
+            )
+            assert response.status_code == 201, response.text
+    return seen
+
+
+async def test_14_bastion_buckets_on_sub_and_frontend_visitors_on_their_address(
+    app: FastAPI, keys: Keys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frontend = keys.frontend_token()
+    seen = await _buckets(
+        app,
+        monkeypatch,
+        [
+            {"X-Platform-Token": keys.bastion_token(), "X-Forwarded-For": "203.0.113.5"},
+            {"X-Platform-Token": frontend, "X-Forwarded-For": "203.0.113.5"},
+            {"X-Platform-Token": frontend, "X-Forwarded-For": "198.51.100.7"},
+        ],
+    )
     assert seen == [
-        ("bastion:v_abc1234567", "debates"),
-        ("paper-trail-frontend:paper-trail-frontend", "debates"),
+        "bastion:v_abc1234567",
+        "paper-trail-frontend:203.0.113.5",
+        "paper-trail-frontend:198.51.100.7",
     ]
+    # Two visitors through the same frontend land in different buckets.
+    assert seen[1] != seen[2]
 
 
 # ─── paper-trail's own cases ──────────────────────────────────────────────────
@@ -483,22 +497,26 @@ async def test_c23_test_settings_without_a_key_pass_as_anonymous(
         assert (await _get_protected(app)).status_code == 503, env
 
 
-async def test_c24_rate_limit_key_falls_back_to_the_forwarded_address(
+async def test_c24_anonymous_and_frontend_buckets_use_the_client_address(
+    app: FastAPI, keys: Keys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frontend = keys.frontend_token()
+    seen = await _buckets(
+        app,
+        monkeypatch,
+        [
+            {"X-Platform-Token": frontend, "X-Forwarded-For": "203.0.113.5, 10.0.0.1"},
+            {"X-Platform-Token": frontend},
+        ],
+    )
+    # The leftmost entry of a chain; without the header, the socket peer.
+    assert seen == ["paper-trail-frontend:203.0.113.5", "paper-trail-frontend:127.0.0.1"]
+
+
+async def test_c24_anonymous_requests_bucket_on_the_forwarded_address(
     app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: list[str] = []
-
-    async def _capture(identifier: str, *, scope: str) -> None:
-        seen.append(identifier)
-
-    monkeypatch.setattr(rate_limit, "enforce_rate_limit", _capture)
-    async with _client(app) as c:
-        response = await c.post(
-            "/debates",
-            json={"claim": "x", "max_rounds": 2},
-            headers={"X-Forwarded-For": "203.0.113.5, 10.0.0.1"},
-        )
-    assert response.status_code == 201
+    seen = await _buckets(app, monkeypatch, [{"X-Forwarded-For": "203.0.113.5, 10.0.0.1"}])
     assert seen == ["203.0.113.5"]
 
 

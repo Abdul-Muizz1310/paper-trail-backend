@@ -60,7 +60,7 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - 🔐 Platform token contract v2 on every non-public route: an Ed25519 JWT from bastion or this product's own frontend, `aud` = `paper-trail`, 10 s leeway, fails closed (503) when no key is configured ([spec 10](docs/specs/10-platform-contract-v2.md)); the receipt surfaces (`transcript.json`, `transcript.md`, the receipt key) stay public
 - 🔐 Synchronous endpoint for bastion integrations — bastion-signed tokens only
 - 🧾 Ed25519-signed transcript receipts — `transcript.json` carries a signature over the canonical transcript; verify against the key at `GET /platform/receipt-public-key`
-- ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — keyed on the verified caller (`iss:sub`), or for an anonymous request on `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
+- ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — bastion callers by their visitor pseudonym (`bastion:{sub}`), frontend callers by the one address its proxy forwards (`paper-trail-frontend:{address}`), anonymous requests by `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
 - 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline; a JSON reply the schema cannot read also falls through to the fallback (a fenced or one-element-array reply is unwrapped first)
 - ✅ Red-first TDD — failing test lands before every feature
 - 🚀 Render one-click deploy; the container entrypoint runs `alembic upgrade head` on every boot (a no-op at head; a failed migration aborts the boot)
@@ -286,7 +286,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 430 tests (426 fast, 2 integration, 2 smoke) |
+| **Test count** | 431 tests (427 fast, 2 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |

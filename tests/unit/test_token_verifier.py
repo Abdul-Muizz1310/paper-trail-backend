@@ -68,13 +68,12 @@ def test_a_valid_token_yields_its_principal() -> None:
     assert verify_token(_token(_claims()), KEYS, now=NOW) == Principal(
         iss="bastion", sub="v_abc1234567", role="editor", aud="paper-trail"
     )
-    assert Principal("bastion", "v_x", "", "paper-trail").rate_limit_key == "bastion:v_x"
 
 
 def test_a_frontend_token_yields_the_frontend_principal() -> None:
     claims = _claims(iss=FRONTEND_ISSUER, sub="paper-trail-frontend", role="frontend")
     principal = verify_token(_token(claims, FRONTEND), KEYS, now=NOW)
-    assert principal.rate_limit_key == "paper-trail-frontend:paper-trail-frontend"
+    assert (principal.iss, principal.sub) == ("paper-trail-frontend", "paper-trail-frontend")
 
 
 def test_a_bastion_token_without_role_has_an_empty_role() -> None:

@@ -75,9 +75,17 @@ without a key) `401 {"detail": "missing_platform_token"}`.
 
 ## 5. Rate limiting
 
-The paid endpoints' bucket key is `"{iss}:{sub}"` for an authenticated request; otherwise the leftmost
-`X-Forwarded-For` entry, then `X-Real-IP`, then the socket peer, then `"unknown"`
-(`core/rate_limit.py`).
+The paid endpoints' bucket key (`core/rate_limit.bucket_key`), per the contract as amended on
+2026-10-20:
+
+| Caller | Bucket |
+|---|---|
+| bastion's key | `"bastion:{sub}"` (`sub` is the visitor pseudonym) |
+| the frontend's key | `"paper-trail-frontend:{client address}"`: the frontend's `sub` is the same for every visitor, so keying on it would put the whole site in one bucket; its proxy forwards exactly one client address in `X-Forwarded-For`, which it sets itself |
+| anonymous | `"{client address}"` |
+
+The client address is the leftmost non-empty `X-Forwarded-For` entry, then `X-Real-IP`, then the
+socket peer, then `"unknown"`. (The first draft keyed every authenticated request on `iss:sub`.)
 
 ## 6. CORS
 
@@ -108,7 +116,8 @@ backends first. Until the minters send `iss` and `aud`, their current tokens fai
 11. present-but-invalid token with `DEMO_MODE=true` ⇒ still 401 invalid
 12. no trusted key configured (non-test settings) ⇒ 503 on a protected route, 200 on `/health`
 13. every public route answers without a token
-14. rate-limit key is `iss:sub` for an authenticated request
+14. rate-limit key is `bastion:{sub}` for a bastion token and `{iss}:{forwarded address}` for a frontend
+    token (two visitors through the same frontend land in different buckets)
 
 ### paper-trail's own cases
 
@@ -127,7 +136,8 @@ backends first. Until the minters send `iss` and `aud`, their current tokens fai
   `DEMO_MODE=true` without a token ⇒ 401 missing.
 - **C23** test settings without a key ⇒ a protected route passes as anonymous; with `APP_ENV`
   anything else ⇒ 503.
-- **C24** the rate-limit key falls back to the forwarded client address for an anonymous request.
+- **C24** the rate-limit key falls back to the forwarded client address for an anonymous request; a
+  frontend token's bucket uses the leftmost entry of a chain, and the socket peer without a header.
 - **C25** CORS: a preflight asking for `x-platform-token` from an allowed origin is answered by CORS
   (200, the header allowed) without a token; a 401 answer to an allowed origin carries
   `access-control-allow-origin`.
