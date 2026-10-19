@@ -40,8 +40,9 @@ services:
         sync: false
       - key: RATE_LIMIT_ENABLED
         value: "true"
-      # Ed25519 verification: bastion's public key (base64 DER). With DEMO_MODE
-      # off and no key set, /platform/debate fails closed (401 for everyone).
+      # Platform contract v2 (docs/specs/10-platform-contract-v2.md): bastion's
+      # public key (base64 SPKI DER). With neither this nor the frontend key set,
+      # every protected route answers 503 (fail closed).
       - key: BASTION_SIGNING_KEY_PUBLIC
         sync: false
       # paper-trail-frontend's own Ed25519 public key (base64 SPKI DER); never opens /platform/debate.
@@ -58,8 +59,8 @@ services:
         value: "https://paper-trail-backend-jjpf.onrender.com"
       - key: CORS_ORIGINS
         value: "https://paper-trail-frontend-sable.vercel.app,http://localhost:3000"
-      # Fail closed: DEMO_MODE must be set explicitly by the operator (default
-      # is false in code). Never hardcode "true" on a deploy with real keys.
+      # Default false in code. true only tolerates a *missing* token during a
+      # rollout; a present token is always verified. Never hardcode "true".
       - key: DEMO_MODE
         sync: false
       - key: PORT

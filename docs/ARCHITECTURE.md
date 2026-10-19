@@ -42,7 +42,7 @@ of this file were not:
 
 | Layer | Key files | Responsibility | Never touches |
 |---|---|---|---|
-| `main.py` | App construction: `configure_logging()`, `install_middleware`, `install_health_routes`, `install_metrics`, `install_platform_token`, router mounting | -- | Business logic |
+| `main.py` | `create_app()`: `install_platform_token` (innermost), `install_health_routes`, `install_metrics`, `install_middleware` (CORS + request ids, outermost), router mounting | -- | Business logic |
 | `api/routers/` | `debates.py`, `platform.py` | HTTP shape, request validation, SSE streaming | DB, LLMs |
 | `api/deps.py` | `get_service()` | FastAPI dependency wiring | DB, LLMs |
 | `services/` | `debates.py` (`DebateService`) | Orchestration -- create debate, drive the graph, persist each update | HTTP, raw SQL |
@@ -59,15 +59,15 @@ of this file were not:
 | `core/llm.py` | `chat()`, `chat_json()` | OpenRouter client, primary→fast→fallback cascade, jittered backoff on 429 | Everything above |
 | `core/langfuse.py` | `span()`, `trace()`, `update_current_*` | LangFuse/OTel tracing wrapper; degrades to a no-op on any error | Everything above |
 | `core/prompts.py` | `load()` | Reads `agents/prompts/*.md` | Everything above |
-| `core/rate_limit.py` | `client_identifier()`, `enforce_rate_limit()`, `rate_limiter()` | Upstash fixed-window per-caller throttle (fail-open) | Everything above |
+| `core/rate_limit.py` | `bucket_key()`, `client_identifier()`, `enforce_rate_limit()`, `rate_limiter()` | Upstash fixed-window per-caller throttle (fail-open); bucket `iss:sub` once authenticated | Everything above |
 | `core/signing.py` | `sign_transcript()`, `public_key_pem()`, `verify_transcript_signature()` | Ed25519 receipt signatures | Everything above |
-| `core/platform_auth.py` | `verify_platform_token()` | Bearer-token check for `/platform/debate` (fails closed outside demo mode) | Everything above |
 | `core/errors.py` | `LLMError`, `ToolError`, `InvalidCursorError` | Typed failure vocabulary | Everything |
 | `platform/health.py` | `install_health_routes()` | `GET /health` (with a real `SELECT 1` probe) and `GET /version` | Business logic |
 | `platform/logging.py` | `configure_logging()` | structlog JSON logging with `service` / `request_id` fields | Business logic |
 | `platform/metrics.py` | `install_metrics()` | Prometheus `GET /metrics`, gated by `METRICS_TOKEN` when set | Business logic |
 | `platform/middleware.py` | `install_middleware()` | CORS allowlist + `X-Request-Id` propagation | Business logic |
-| `platform/platform_token.py` | `install_platform_token()`, `verify_platform_jwt()` | `X-Platform-Token` EdDSA JWT gate for bastion, with an exempt path list | Business logic |
+| `platform/platform_token.py` | `install_platform_token()`, `load_trusted_keys()`, `is_public()`, `principal_of()` | Contract-v2 `X-Platform-Token` middleware: key loading, the method-aware public route list, 401/503 envelopes | Business logic |
+| `platform/token_verifier.py` | `verify_token()`, `Principal`, `TrustedKey` | Pure contract-v2 token checks (alg, signature, iss per key, aud, leeway, lifetime) | I/O, HTTP |
 
 ## Data model
 
@@ -117,7 +117,7 @@ flowchart TD
 
     subgraph Shared ["Shared"]
         Schemas["schemas/<br/>debates.py DTOs"]
-        Core["core/<br/>config, db, llm, langfuse, prompts,<br/>rate_limit, signing, platform_auth, errors"]
+        Core["core/<br/>config, db, llm, langfuse, prompts,<br/>rate_limit, signing, errors"]
     end
 
     Routers --> Services

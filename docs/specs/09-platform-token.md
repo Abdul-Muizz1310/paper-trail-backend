@@ -1,5 +1,7 @@
 # Spec 09 — Platform token: bastion's key and the frontend's own key
 
+> **Superseded 2026-10-20** by [spec 10 — platform token contract v2](10-platform-contract-v2.md) on branch `contract-v2`: `iss`/`aud` checks, fail-closed 503 without a key, public receipt routes, `DEMO_MODE` tolerating only a missing token. Kept as history.
+
 ## Goal
 
 `DEMO_MODE=false` with bastion's public key set makes the `X-Platform-Token`

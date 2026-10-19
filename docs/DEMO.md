@@ -10,7 +10,7 @@ The platform endpoint runs the graph end-to-end in one HTTP call and caps at 3 r
 BASE=https://paper-trail-backend-jjpf.onrender.com
 
 curl -sS -X POST "$BASE/platform/debate" \
-  -H 'Authorization: Bearer demo' \
+  -H "Authorization: Bearer $BASTION_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"claim":"Humans only use 10 percent of their brains.","max_rounds":2}'
 ```

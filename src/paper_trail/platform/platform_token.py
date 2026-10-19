@@ -1,255 +1,214 @@
-"""X-Platform-Token middleware — verifies Ed25519 platform JWTs from two minters.
+"""X-Platform-Token middleware — contract v2 (docs/specs/10-platform-contract-v2.md).
 
-In demo mode the middleware accepts every request and logs a one-time warning.
-When demo mode is off it trusts two keys (docs/specs/09-platform-token.md):
+The imperative shell around ``token_verifier``: it loads the trusted keys from
+the environment (bastion's from ``BASTION_SIGNING_KEY_PUBLIC`` or, cached for an
+hour, ``BASTION_PUBLIC_KEY_URL``; the frontend's from
+``PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC``), decides per request whether the
+route is public, and answers 401 / 503 with the contract's envelopes. A verified
+caller is left on ``request.state.platform_principal`` for the rate limiter and
+for ``POST /platform/debate``'s bastion-only check.
 
-- bastion's — ``BASTION_SIGNING_KEY_PUBLIC`` (base64 DER) or fetched once from
-  ``BASTION_PUBLIC_KEY_URL`` and cached for an hour;
-- paper-trail-frontend's own — ``PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC``
-  (base64 DER, env only). A token signed by it must also carry
-  ``service == "paper-trail"`` and ``role == "frontend"`` (DR-0030: the
-  frontend's server proxies browser calls).
-
-With either key configured it verifies the EdDSA-signed ``X-Platform-Token``
-(``exp`` required and in the future, 10 s clock-skew leeway on ``exp`` and
-``iat``) on every non-exempt route and rejects
-invalid or missing tokens with 401. The platform and docs endpoints are always
-exempt. With no key configured the middleware fails open: enforcement is
-opt-in. Token format is ``{sub, role, service, iat, exp}`` EdDSA JWT (see
-bastion ``src/lib/gateway/jwt.ts``).
-
-``verify_platform_jwt`` (the ``POST /platform/debate`` bearer check) trusts
-bastion's key only and fails closed without it: the frontend key never opens
-bastion's integrated-demo entry point.
+Per request, in order (spec 10 §3): public route → pass; no trusted key → 503
+(the test settings pass as anonymous); no token → 401 missing, or anonymous
+with a WARNING under ``DEMO_MODE``; a present token → verified, any failure 401
+invalid with a WARNING naming the check, never the token.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import functools
 import logging
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 import httpx
-import jwt
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from paper_trail.core.config import settings
+from paper_trail.platform.token_verifier import (
+    BASTION_ISSUER,
+    FRONTEND_ISSUER,
+    FRONTEND_ROLE,
+    Principal,
+    TokenRejectedError,
+    TrustedKey,
+    verify_token,
+)
+
 logger = logging.getLogger(__name__)
 
 _Handler = Callable[[Request], Awaitable[Response]]
 
 _HEADER = "x-platform-token"
-_EXEMPT_EXACT = frozenset(
+BASTION_KEY_ENV = "BASTION_SIGNING_KEY_PUBLIC"
+BASTION_KEY_URL_ENV = "BASTION_PUBLIC_KEY_URL"
+FRONTEND_KEY_ENV = "PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC"
+_BOM = "﻿"
+_PUBLIC_KEY_TTL_S = 3600.0
+_TEST_APP_ENV = "test"
+
+# Public routes (spec 10 §3): read-only methods on exact paths, never a write.
+_PUBLIC_METHODS = frozenset({"GET", "HEAD"})
+_PUBLIC_PATHS = frozenset(
     {
         "/health",
         "/version",
-        "/metrics",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
         "/openapi.json",
-        # The receipt verification key must be publicly fetchable so third
-        # parties can verify signed transcripts even under token enforcement.
+        "/metrics",
         "/platform/receipt-public-key",
     }
 )
-_EXEMPT_PREFIXES = ("/docs", "/redoc")
-_PUBLIC_KEY_TTL_S = 3600.0
+_PUBLIC_TRANSCRIPT = re.compile(r"/debates/[^/]+/transcript\.(?:json|md)")
 
-# A frontend-key token is honoured only for this service and this role.
-_SERVICE_ID = "paper-trail"
-_FRONTEND_ROLE = "frontend"
-_FRONTEND_KEY_ENV = "PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC"
-_BOM = "\ufeff"
-# Tokens are minted on Vercel/bastion and verified here on Render; tolerate this
-# much clock skew on ``exp`` and ``iat`` (PyJWT rejects an ``iat`` in the future).
-_LEEWAY_S = 10
+MISSING = {"detail": "missing_platform_token"}
+INVALID = {"detail": "invalid_platform_token"}
+UNCONFIGURED = {"detail": "platform_auth_unconfigured"}
 
-# (fetched_at_monotonic, pem) — only used for the BASTION_PUBLIC_KEY_URL path.
-_key_cache: tuple[float, str | None] = (0.0, None)
+# (fetched_at_monotonic, base64 SPKI DER) for the BASTION_PUBLIC_KEY_URL path.
+_url_key_cache: tuple[float, str | None] = (0.0, None)
 
 
 def reset_public_key_cache() -> None:
-    """Clear the fetched-public-key cache and the parsed frontend key (test seam)."""
-    global _key_cache
-    _key_cache = (0.0, None)
-    _frontend_key_from_value.cache_clear()
+    """Clear the fetched bastion key and the parsed key values (test seam)."""
+    global _url_key_cache
+    _url_key_cache = (0.0, None)
+    _parse_key_value.cache_clear()
 
 
-def _wrap_pem(b64_der: str) -> str:
-    return f"-----BEGIN PUBLIC KEY-----\n{b64_der.strip()}\n-----END PUBLIC KEY-----\n"
+def is_public(method: str, path: str) -> bool:
+    """True for the read-only verification surfaces that never need a token."""
+    if method not in _PUBLIC_METHODS:
+        return False
+    return path in _PUBLIC_PATHS or _PUBLIC_TRANSCRIPT.fullmatch(path) is not None
 
 
-def _cached_url_key() -> str | None:
-    """Return the cached URL-fetched PEM if still fresh, else None."""
-    cached_at, cached = _key_cache
-    if cached is not None and (time.monotonic() - cached_at) < _PUBLIC_KEY_TTL_S:
-        return cached
+def extract_token(request: Request) -> str | None:
+    """``X-Platform-Token`` first, then an ``Authorization: Bearer`` token."""
+    header = request.headers.get(_HEADER, "").strip()
+    if header:
+        return header
+    scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and credentials.strip():
+        return credentials.strip()
     return None
 
 
-def _fetch_and_cache_url_key(url: str) -> str | None:
-    """Blocking fetch of the public key from `url` (run off the event loop)."""
-    global _key_cache
+@functools.lru_cache(maxsize=8)
+def _parse_key_value(variable: str, value: str) -> Ed25519PublicKey | None:
+    """Parse one configured base64 SPKI DER value; cached so a bad value warns once."""
+    try:
+        key = serialization.load_der_public_key(base64.b64decode(value, validate=True))
+    except (ValueError, binascii.Error, UnsupportedAlgorithm):
+        key = None
+    if isinstance(key, Ed25519PublicKey):
+        return key
+    # Name the variable, never its value.
+    logger.warning("%s is not a base64 Ed25519 public key (SPKI DER); ignoring it", variable)
+    return None
+
+
+def _clean(value: str) -> str:
+    """Strip a byte-order mark and edge whitespace (values pasted from a Windows shell)."""
+    return value.strip().lstrip(_BOM).strip()
+
+
+def _key_from_env(variable: str) -> Ed25519PublicKey | None:
+    value = _clean(os.environ.get(variable, ""))
+    return _parse_key_value(variable, value) if value else None
+
+
+def _fetch_bastion_key(url: str) -> str | None:
+    """Blocking fetch of bastion's public key (run off the event loop)."""
+    global _url_key_cache
     try:
         resp = httpx.get(url, timeout=5.0)
         resp.raise_for_status()
-        pem = _wrap_pem(str(resp.json()["publicKey"]))
+        value = _clean(str(resp.json()["publicKey"]))
     except Exception:  # pragma: no cover - network failure path
-        logger.warning("could not fetch bastion public key from %s", url)
+        logger.warning("could not fetch bastion's public key from %s", BASTION_KEY_URL_ENV)
         return None
-    _key_cache = (time.monotonic(), pem)
-    return pem
+    _url_key_cache = (time.monotonic(), value)
+    return value
 
 
-def load_public_key_pem() -> str | None:
-    """Resolve bastion's Ed25519 public key as PEM (env first, then cached URL).
-
-    Synchronous variant — safe off the event loop (e.g. inside asyncio.to_thread
-    or from a sync test). Prefer ``load_public_key_pem_async`` on the loop.
-    """
-    raw = os.environ.get("BASTION_SIGNING_KEY_PUBLIC")
-    if raw:
-        return _wrap_pem(raw)
-    url = os.environ.get("BASTION_PUBLIC_KEY_URL")
+async def _bastion_key() -> Ed25519PublicKey | None:
+    """bastion's key: the env value, else the URL-fetched one (cached an hour)."""
+    if _clean(os.environ.get(BASTION_KEY_ENV, "")):
+        return _key_from_env(BASTION_KEY_ENV)
+    url = os.environ.get(BASTION_KEY_URL_ENV, "").strip()
     if not url:
         return None
-    cached = _cached_url_key()
-    if cached is not None:
-        return cached
-    return _fetch_and_cache_url_key(url)
+    fetched_at, value = _url_key_cache
+    if value is None or time.monotonic() - fetched_at >= _PUBLIC_KEY_TTL_S:
+        value = await asyncio.to_thread(_fetch_bastion_key, url)
+    return _parse_key_value(BASTION_KEY_URL_ENV, value) if value else None
 
 
-async def load_public_key_pem_async() -> str | None:
-    """Async key resolver that never blocks the event loop.
-
-    The env-var key is instant; the URL fetch (only on a cold cache) is pushed
-    through ``asyncio.to_thread`` so a slow/hanging bastion never stalls other
-    in-flight requests on a single-worker deploy.
-    """
-    raw = os.environ.get("BASTION_SIGNING_KEY_PUBLIC")
-    if raw:
-        return _wrap_pem(raw)
-    url = os.environ.get("BASTION_PUBLIC_KEY_URL")
-    if not url:
-        return None
-    cached = _cached_url_key()
-    if cached is not None:
-        return cached
-    return await asyncio.to_thread(_fetch_and_cache_url_key, url)
+async def load_trusted_keys() -> tuple[TrustedKey, ...]:
+    """Every configured key with the issuer (and role) a token it verifies must claim."""
+    keys: list[TrustedKey] = []
+    bastion = await _bastion_key()
+    if bastion is not None:
+        keys.append(TrustedKey(key=bastion, issuer=BASTION_ISSUER, required_role=None))
+    frontend = _key_from_env(FRONTEND_KEY_ENV)
+    if frontend is not None:
+        keys.append(TrustedKey(key=frontend, issuer=FRONTEND_ISSUER, required_role=FRONTEND_ROLE))
+    return tuple(keys)
 
 
-def verify_platform_jwt(token: str) -> bool:
-    """Verify an EdDSA platform JWT against bastion's public key.
-
-    Fails **closed**: returns False when no key is configured (so a
-    non-demo deployment with no key rejects everything) or verification fails.
-    bastion's key only — a frontend-key token is never accepted here.
-    """
-    pem = load_public_key_pem()
-    if pem is None:
-        return False
-    return _verify(token, pem)
+def principal_of(request: Request) -> Principal | None:
+    """The verified caller the middleware left on ``request``, if any."""
+    principal = getattr(request.state, "platform_principal", None)
+    return principal if isinstance(principal, Principal) else None
 
 
-def parse_ed25519_public_key(b64_der: str) -> Ed25519PublicKey | None:
-    """Parse base64 SPKI DER into an Ed25519 public key; ``None`` for anything else."""
-    try:
-        key = serialization.load_der_public_key(base64.b64decode(b64_der, validate=True))
-    except (ValueError, UnsupportedAlgorithm):
-        return None
-    return key if isinstance(key, Ed25519PublicKey) else None
-
-
-@functools.lru_cache(maxsize=4)
-def _frontend_key_from_value(value: str) -> Ed25519PublicKey | None:
-    """Parse one configured value; cached so a bad value warns once, not per request."""
-    key = parse_ed25519_public_key(value)
-    if key is None:
-        # Name the variable, never its value.
-        logger.warning(
-            "%s is not a base64 Ed25519 public key (SPKI DER); ignoring it", _FRONTEND_KEY_ENV
-        )
-    return key
-
-
-def load_frontend_public_key() -> Ed25519PublicKey | None:
-    """Resolve paper-trail-frontend's Ed25519 public key from its env var (no URL fetch).
-
-    A byte-order mark and edge whitespace are stripped (values pasted from a
-    Windows shell carry them). Empty means absent; a malformed value logs one
-    warning and is treated as absent, so it can never crash a request.
-    """
-    value = os.environ.get(_FRONTEND_KEY_ENV, "").strip().lstrip(_BOM).strip()
-    if not value:
-        return None
-    return _frontend_key_from_value(value)
-
-
-def _is_exempt(path: str) -> bool:
-    return path in _EXEMPT_EXACT or path.startswith(_EXEMPT_PREFIXES)
-
-
-def _decode(token: str, key: str | Ed25519PublicKey) -> dict[str, Any] | None:
-    """EdDSA-verify ``token`` against ``key`` with ``exp`` required and live (± leeway)."""
-    try:
-        return jwt.decode(
-            token,
-            key,
-            algorithms=["EdDSA"],
-            options={"require": ["exp"]},
-            leeway=_LEEWAY_S,
-        )
-    except Exception:
-        # PyJWT raises its own errors for bad tokens, and ValueError/TypeError for
-        # some malformed keys and claim values; every one of them is a rejection.
-        return None
-
-
-def _verify(token: str, pem: str) -> bool:
-    return _decode(token, pem) is not None
-
-
-def _verify_frontend(token: str, key: Ed25519PublicKey) -> bool:
-    claims = _decode(token, key)
-    return (
-        claims is not None
-        and claims.get("service") == _SERVICE_ID
-        and claims.get("role") == _FRONTEND_ROLE
-    )
-
-
-def _token_is_trusted(
-    token: str, *, bastion_pem: str | None, frontend_key: Ed25519PublicKey | None
-) -> bool:
-    """True when bastion's key verifies ``token``, or the frontend key does for this service."""
-    if bastion_pem is not None and _verify(token, bastion_pem):
-        return True
-    return frontend_key is not None and _verify_frontend(token, frontend_key)
-
-
-def install_platform_token(app: FastAPI, *, demo_mode: bool) -> None:
-    """Attach the X-Platform-Token verification middleware to ``app``."""
-    if demo_mode:
-        logger.warning(
-            "DEMO_MODE active: X-Platform-Token validation is bypassed; accepting all requests"
-        )
+def install_platform_token(app: FastAPI) -> None:
+    """Attach the contract-v2 ``X-Platform-Token`` middleware to ``app``."""
 
     @app.middleware("http")
     async def _platform_token_middleware(request: Request, call_next: _Handler) -> Response:
-        if demo_mode or _is_exempt(request.url.path):
+        if is_public(request.method, request.url.path):
             return await call_next(request)
-        pem = await load_public_key_pem_async()
-        frontend_key = load_frontend_public_key()
-        if pem is None and frontend_key is None:
-            # Enforcement is opt-in; with no key configured we fail open.
-            return await call_next(request)
-        token = request.headers.get(_HEADER)
-        if not token or not _token_is_trusted(token, bastion_pem=pem, frontend_key=frontend_key):
-            return JSONResponse({"error": "invalid platform token"}, status_code=401)
+
+        keys = await load_trusted_keys()
+        if not keys:
+            if settings.app_env == _TEST_APP_ENV:
+                return await call_next(request)
+            logger.error("no trusted platform key is configured; failing closed")
+            return JSONResponse(UNCONFIGURED, status_code=503)
+
+        token = extract_token(request)
+        if token is None:
+            if settings.demo_mode:
+                logger.warning(
+                    "DEMO_MODE: %s %s has no platform token; serving it anonymously",
+                    request.method,
+                    request.url.path,
+                )
+                return await call_next(request)
+            return JSONResponse(MISSING, status_code=401)
+
+        try:
+            principal = verify_token(token, keys, now=time.time())
+        except TokenRejectedError as rejected:
+            logger.warning(
+                "platform token rejected on %s %s: failed check %r",
+                request.method,
+                request.url.path,
+                rejected.check,
+            )
+            return JSONResponse(INVALID, status_code=401)
+        request.state.platform_principal = principal
         return await call_next(request)

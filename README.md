@@ -57,9 +57,10 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - 🛡️ Graceful observability — tracing never fails a request
 - 📡 SSE streaming endpoint for live UI updates — each round commits as it's produced (per-write sessions), so progress is genuinely live, not batched at the end
 - 📄 Cursor-paginated debate history
-- 🔐 Synchronous Ed25519-JWT-authenticated endpoint for bastion integrations (fails closed outside demo mode)
+- 🔐 Platform token contract v2 on every non-public route: an Ed25519 JWT from bastion or this product's own frontend, `aud` = `paper-trail`, 10 s leeway, fails closed (503) when no key is configured ([spec 10](docs/specs/10-platform-contract-v2.md)); the receipt surfaces (`transcript.json`, `transcript.md`, the receipt key) stay public
+- 🔐 Synchronous endpoint for bastion integrations — bastion-signed tokens only
 - 🧾 Ed25519-signed transcript receipts — `transcript.json` carries a signature over the canonical transcript; verify against the key at `GET /platform/receipt-public-key`
-- ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — the caller is resolved from `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
+- ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — keyed on the verified caller (`iss:sub`), or for an anonymous request on `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
 - 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline; a JSON reply the schema cannot read also falls through to the fallback (a fenced or one-element-array reply is unwrapped first)
 - ✅ Red-first TDD — failing test lands before every feature
 - 🚀 Render one-click deploy; the container entrypoint runs `alembic upgrade head` on every boot (a no-op at head; a failed migration aborts the boot)
@@ -139,14 +140,14 @@ src/paper_trail/
 │   ├── prompts.py           # Loader for agents/prompts/*.md
 │   ├── rate_limit.py        # Upstash fixed-window per-caller throttle
 │   ├── signing.py           # Ed25519 transcript receipt signing
-│   ├── platform_auth.py     # /platform/debate bearer check (fails closed)
 │   └── errors.py            # ToolError, LLMError, InvalidCursorError
 └── platform/                # Cross-cutting platform surface (not business logic)
     ├── health.py            # /health (real SELECT 1 probe), /version
     ├── logging.py           # structlog JSON logging
     ├── metrics.py           # Prometheus /metrics, METRICS_TOKEN gate
     ├── middleware.py        # CORS + X-Request-ID propagation
-    └── platform_token.py    # X-Platform-Token EdDSA JWT verification
+    ├── platform_token.py    # contract-v2 X-Platform-Token middleware (keys, public routes, 401/503)
+    └── token_verifier.py    # pure contract-v2 token checks → Principal
 ```
 
 ---
@@ -159,10 +160,10 @@ src/paper_trail/
 | `GET`  | `/debates` | Cursor-paginated list (`limit` 1–100). |
 | `GET`  | `/debates/{id}` | Fetch current state (status, verdict, confidence, rounds). |
 | `GET`  | `/debates/{id}/stream` | 📡 **SSE** — emits `state` on every change, `ping` keepalives, one `done` at terminal state, `error` for an unknown id. |
-| `GET`  | `/debates/{id}/transcript.md` | Deterministic markdown transcript with citations. `409 {"reason":"not_finished"}` while the debate is still running. |
-| `GET`  | `/debates/{id}/transcript.json` | 🧾 Signed receipt — typed rounds, citations, `transcript_hash`, Ed25519 `signature`. `409` until the debate is `done`. |
-| `POST` | `/platform/debate` | 🔐 Synchronous bearer-auth endpoint. `max_rounds` capped at 3. |
-| `GET`  | `/platform/receipt-public-key` | Ed25519 public key (PEM) for verifying `transcript.json` signatures. |
+| `GET`  | `/debates/{id}/transcript.md` | Deterministic markdown transcript with citations. `409 {"reason":"not_finished"}` while the debate is still running. **Public** (no token). |
+| `GET`  | `/debates/{id}/transcript.json` | 🧾 Signed receipt — typed rounds, citations, `transcript_hash`, Ed25519 `signature`. `409` until the debate is `done`. **Public** (no token). |
+| `POST` | `/platform/debate` | 🔐 Synchronous endpoint, **bastion-signed tokens only** (a frontend token gets 401). `max_rounds` capped at 3. |
+| `GET`  | `/platform/receipt-public-key` | Ed25519 public key (PEM) for verifying `transcript.json` signatures. **Public**. |
 | `GET`  | `/health` | Health probe — always `200`; carries `{status, service, version, commit_sha, db}` where `db` is the result of a live `SELECT 1`. Used as Render's `healthCheckPath`. |
 | `GET`  | `/version` | `{service, version, commit_sha}` — the deployed commit. |
 | `GET`  | `/metrics` | Prometheus exposition. Requires `Authorization: Bearer $METRICS_TOKEN` when that secret is set; public when unset. |
@@ -229,16 +230,22 @@ uv run uvicorn paper_trail.main:app --reload
 # → http://localhost:8000/docs
 ```
 
+Every route but `/health`, `/version`, the docs, `/metrics` and the receipt surfaces needs a platform
+token (contract v2, [spec 10](docs/specs/10-platform-contract-v2.md)). With no key configured the
+server fails closed (503). For a keyless local run, start it under the test settings, which pass
+untokened requests as anonymous: `APP_ENV=test uv run uvicorn paper_trail.main:app --reload`.
+`POST /platform/debate` still needs a real bastion token.
+
 ### 🔐 Synchronous path (bastion / CLI)
 
 ```bash
 curl -X POST http://localhost:8000/platform/debate \
-  -H 'Authorization: Bearer demo' \
+  -H "Authorization: Bearer $BASTION_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"claim":"Humans only use 10 percent of their brains.","max_rounds":2}'
 ```
 
-> Expected: `{"verdict":"FALSE","confidence":0.95,...}` in ~30–60s.
+> `$BASTION_TOKEN`: a contract-v2 token signed by the key in `BASTION_SIGNING_KEY_PUBLIC` (`iss: "bastion"`, `aud: "paper-trail"`). Expected: `{"verdict":"FALSE","confidence":0.95,...}` in ~30–60s.
 
 ### 📡 Async / streaming path (web UI flow)
 
@@ -279,7 +286,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 412 tests (408 fast, 2 integration, 2 smoke) |
+| **Test count** | 430 tests (426 fast, 2 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
@@ -333,8 +340,9 @@ Render free tier via [`render.yaml`](render.yaml). One-time setup:
 
 1. Render dashboard → **New → Blueprint** → connect this repo
 2. Fill every `sync: false` env var in service settings. Notably:
-   - `DEMO_MODE` — leave **unset/false** in production. It is not hardcoded; with it off and `BASTION_SIGNING_KEY_PUBLIC` unset, `/platform/debate` fails closed (401 for everyone).
-   - `BASTION_SIGNING_KEY_PUBLIC` — base64 DER of bastion's Ed25519 public key, to accept real platform tokens.
+   - `DEMO_MODE` — leave **unset/false** in production. It only tolerates a *missing* token (served anonymously, logged); a present token is always verified.
+   - `BASTION_SIGNING_KEY_PUBLIC` — base64 SPKI DER of bastion's Ed25519 public key (or `BASTION_PUBLIC_KEY_URL`).
+   - `PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC` — the frontend's own public key (DR-0030). With neither key set, every protected route answers 503 `platform_auth_unconfigured`.
    - `TRANSCRIPT_SIGNING_KEY` — Ed25519 private key PEM for signed receipts (optional).
    - `METRICS_TOKEN` — shared bearer secret gating `/metrics` (optional; unset = public).
    - `UPSTASH_REDIS_REST_URL` / `_TOKEN` + `RATE_LIMIT_ENABLED=true` — enable rate limiting.

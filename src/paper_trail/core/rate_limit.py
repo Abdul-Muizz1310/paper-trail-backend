@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 
 from paper_trail.core.config import settings
+from paper_trail.platform.token_verifier import Principal
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +112,18 @@ def client_identifier(request: Request) -> str:
     return "unknown"
 
 
+def bucket_key(request: Request) -> str:
+    """The caller's bucket (spec 10 §5): ``iss:sub`` once authenticated, else its address."""
+    principal = getattr(request.state, "platform_principal", None)
+    if isinstance(principal, Principal):
+        return principal.rate_limit_key
+    return client_identifier(request)
+
+
 def rate_limiter(scope: str) -> Any:
-    """Build a FastAPI dependency that throttles by client IP within `scope`."""
+    """Build a FastAPI dependency that throttles each caller within `scope`."""
 
     async def _dependency(request: Request) -> None:
-        await enforce_rate_limit(client_identifier(request), scope=scope)
+        await enforce_rate_limit(bucket_key(request), scope=scope)
 
     return _dependency

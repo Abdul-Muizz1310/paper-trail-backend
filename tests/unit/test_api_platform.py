@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import base64
-import datetime as dt
+import time
+import uuid
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
 
 from paper_trail.api import deps
-from paper_trail.core import platform_auth
+from paper_trail.core.config import settings
 from paper_trail.main import app
 from paper_trail.platform import platform_token
 
@@ -74,13 +75,68 @@ async def _client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def test_platform_happy(fake_service, monkeypatch) -> None:
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+def _keypair() -> tuple[str, str]:
+    priv = Ed25519PrivateKey.generate()
+    priv_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    pub_der = priv.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return priv_pem, base64.b64encode(pub_der).decode()
+
+
+def _signed(priv_pem: str, *, iss: str, sub: str, role: str) -> str:
+    """A contract-v2 token (docs/specs/10-platform-contract-v2.md) for this service."""
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "iss": iss,
+            "aud": "paper-trail",
+            "sub": sub,
+            "role": role,
+            "service": "paper-trail",
+            "iat": now,
+            "exp": now + 60,
+            "jti": str(uuid.uuid4()),
+        },
+        priv_pem,
+        algorithm="EdDSA",
+    )
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    """bastion's and the frontend's keys configured; returns both private PEMs."""
+    bastion_priv, bastion_pub = _keypair()
+    frontend_priv, frontend_pub = _keypair()
+    monkeypatch.setenv("BASTION_SIGNING_KEY_PUBLIC", bastion_pub)
+    monkeypatch.setenv("PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC", frontend_pub)
+    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
+    monkeypatch.setattr(settings, "demo_mode", False)
+    platform_token.reset_public_key_cache()
+    yield bastion_priv, frontend_priv
+    platform_token.reset_public_key_cache()
+
+
+@pytest.fixture
+def bastion_auth(keys) -> dict[str, str]:
+    """bastion's call shape: the same token as a Bearer (and nothing else)."""
+    bastion_priv, _ = keys
+    return {
+        "Authorization": f"Bearer {_signed(bastion_priv, iss='bastion', sub='bastion', role='admin')}"
+    }
+
+
+async def test_platform_happy(fake_service, monkeypatch, bastion_auth) -> None:
     async with await _client() as c:
         r = await c.post(
             "/platform/debate",
             json={"claim": "hello", "max_rounds": 3},
-            headers={"Authorization": "Bearer demo"},
+            headers=bastion_auth,
         )
     assert r.status_code == 200
     body = r.json()
@@ -90,15 +146,22 @@ async def test_platform_happy(fake_service, monkeypatch) -> None:
     assert body["transcript_url"].endswith("/transcript.md")
 
 
-async def test_platform_missing_auth_header_401(fake_service, monkeypatch) -> None:
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", False)
+async def test_platform_missing_auth_header_401(fake_service, monkeypatch, keys) -> None:
     async with await _client() as c:
         r = await c.post("/platform/debate", json={"claim": "x"})
     assert r.status_code == 401
+    assert r.json() == {"detail": "missing_platform_token"}
 
 
-async def test_platform_invalid_token_401(fake_service, monkeypatch) -> None:
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", False)
+async def test_platform_anonymous_under_test_settings_is_401_not_a_debate(fake_service) -> None:
+    """No key under the test settings passes the middleware, never the endpoint."""
+    async with await _client() as c:
+        r = await c.post("/platform/debate", json={"claim": "x"})
+    assert r.status_code == 401
+    assert fake_service.create_called_with == []
+
+
+async def test_platform_invalid_token_401(fake_service, monkeypatch, keys) -> None:
     async with await _client() as c:
         r = await c.post(
             "/platform/debate",
@@ -108,13 +171,12 @@ async def test_platform_invalid_token_401(fake_service, monkeypatch) -> None:
     assert r.status_code == 401
 
 
-async def test_platform_caps_max_rounds_to_three(fake_service, monkeypatch) -> None:
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+async def test_platform_caps_max_rounds_to_three(fake_service, monkeypatch, bastion_auth) -> None:
     async with await _client() as c:
         r = await c.post(
             "/platform/debate",
             json={"claim": "x", "max_rounds": 10},
-            headers={"Authorization": "Bearer demo"},
+            headers=bastion_auth,
         )
     # Pydantic will reject 10 (le=10 actually allows 10) -- spec says cap, but the schema
     # constrains [1,10]; we then clamp to 3.
@@ -122,21 +184,19 @@ async def test_platform_caps_max_rounds_to_three(fake_service, monkeypatch) -> N
     assert fake_service.create_called_with[0][1] == 3
 
 
-async def test_platform_default_max_rounds_three(fake_service, monkeypatch) -> None:
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
+async def test_platform_default_max_rounds_three(fake_service, monkeypatch, bastion_auth) -> None:
     async with await _client() as c:
         r = await c.post(
             "/platform/debate",
             json={"claim": "x"},
-            headers={"Authorization": "Bearer demo"},
+            headers=bastion_auth,
         )
     assert r.status_code == 200
     assert fake_service.create_called_with[0][1] == 3
 
 
-async def test_platform_transcript_url_is_absolute(fake_service, monkeypatch) -> None:
+async def test_platform_transcript_url_is_absolute(fake_service, monkeypatch, bastion_auth) -> None:
     """Spec 99: transcript_url is absolute, built from PUBLIC_BASE_URL."""
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
     from paper_trail.api.routers import platform as platform_mod
 
     monkeypatch.setattr(platform_mod.settings, "public_base_url", "https://api.example.com/")
@@ -144,7 +204,7 @@ async def test_platform_transcript_url_is_absolute(fake_service, monkeypatch) ->
         r = await c.post(
             "/platform/debate",
             json={"claim": "x"},
-            headers={"Authorization": "Bearer demo"},
+            headers=bastion_auth,
         )
     body = r.json()
     assert (
@@ -153,9 +213,8 @@ async def test_platform_transcript_url_is_absolute(fake_service, monkeypatch) ->
     )
 
 
-async def test_platform_malformed_bearer_401(fake_service, monkeypatch) -> None:
+async def test_platform_malformed_bearer_401(fake_service, monkeypatch, keys) -> None:
     """Cover platform.py:28 — malformed Authorization header."""
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
     async with await _client() as c:
         # "Basic" scheme instead of "Bearer"
         r = await c.post(
@@ -166,9 +225,8 @@ async def test_platform_malformed_bearer_401(fake_service, monkeypatch) -> None:
     assert r.status_code == 401
 
 
-async def test_platform_empty_bearer_token_401(fake_service, monkeypatch) -> None:
+async def test_platform_empty_bearer_token_401(fake_service, monkeypatch, keys) -> None:
     """Cover platform.py:28 — Bearer with empty token."""
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
     async with await _client() as c:
         r = await c.post(
             "/platform/debate",
@@ -211,9 +269,10 @@ async def test_receipt_public_key_published_when_signed(fake_service, monkeypatc
     assert "PUBLIC KEY" in body["public_key"]
 
 
-async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatch) -> None:
+async def test_platform_debate_disappears_after_run_500(
+    fake_service, monkeypatch, bastion_auth
+) -> None:
     """Cover platform.py:49 — debate is None after run → 500."""
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", True)
 
     # Override get() to return None after run (simulating disappearance)
     async def vanishing_get(debate_id: UUID) -> Any:
@@ -225,50 +284,19 @@ async def test_platform_debate_disappears_after_run_500(fake_service, monkeypatc
         r = await c.post(
             "/platform/debate",
             json={"claim": "x"},
-            headers={"Authorization": "Bearer demo"},
+            headers=bastion_auth,
         )
     assert r.status_code == 500
     assert "disappeared" in r.json()["detail"]
 
 
-def _keypair() -> tuple[str, str]:
-    priv = Ed25519PrivateKey.generate()
-    priv_pem = priv.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode()
-    pub_der = priv.public_key().public_bytes(
-        serialization.Encoding.DER,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
+async def test_platform_debate_rejects_frontend_token(fake_service, keys) -> None:
+    """Spec 10 §4: a frontend-key token passes the middleware but not /platform/debate."""
+    bastion_priv, frontend_priv = keys
+    frontend = _signed(
+        frontend_priv, iss="paper-trail-frontend", sub="paper-trail-frontend", role="frontend"
     )
-    return priv_pem, base64.b64encode(pub_der).decode()
-
-
-def _signed(priv_pem: str, *, sub: str, role: str) -> str:
-    return jwt.encode(
-        {
-            "sub": sub,
-            "role": role,
-            "service": "paper-trail",
-            "exp": dt.datetime.now(dt.UTC) + dt.timedelta(seconds=60),
-        },
-        priv_pem,
-        algorithm="EdDSA",
-    )
-
-
-async def test_platform_debate_rejects_frontend_token(fake_service, monkeypatch) -> None:
-    """Spec 09: a frontend-key token passes the middleware but not /platform/debate."""
-    monkeypatch.setattr(platform_auth.settings, "demo_mode", False)
-    bastion_priv, bastion_pub = _keypair()
-    frontend_priv, frontend_pub = _keypair()
-    monkeypatch.setenv("BASTION_SIGNING_KEY_PUBLIC", bastion_pub)
-    monkeypatch.setenv("PAPER_TRAIL_FRONTEND_SIGNING_KEY_PUBLIC", frontend_pub)
-    monkeypatch.delenv("BASTION_PUBLIC_KEY_URL", raising=False)
-    platform_token.reset_public_key_cache()
-    frontend = _signed(frontend_priv, sub="paper-trail-frontend", role="frontend")
-    bastion = _signed(bastion_priv, sub="bastion", role="admin")
+    bastion = _signed(bastion_priv, iss="bastion", sub="bastion", role="admin")
 
     async with await _client() as c:
         rejected = await c.post(
@@ -284,6 +312,6 @@ async def test_platform_debate_rejects_frontend_token(fake_service, monkeypatch)
 
     assert rejected.status_code == 401
     # The endpoint's envelope, not the middleware's: the middleware let it through.
-    assert rejected.json() == {"detail": "invalid platform token"}
+    assert rejected.json() == {"detail": "invalid_platform_token"}
     assert accepted.status_code == 200
     assert len(fake_service.create_called_with) == 1

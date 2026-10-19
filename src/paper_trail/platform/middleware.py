@@ -12,6 +12,14 @@ from paper_trail.core.config import settings
 
 _Handler = Callable[[Request], Awaitable[Response]]
 
+ALLOWED_REQUEST_HEADERS = (
+    "content-type",
+    "x-platform-token",
+    "x-request-id",
+    "authorization",
+    "last-event-id",
+)
+
 
 def install_middleware(app: FastAPI) -> None:
     """Attach CORS and request-id middleware to ``app``."""
@@ -20,7 +28,8 @@ def install_middleware(app: FastAPI) -> None:
         allow_origins=settings.cors_origins_list,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
+        # Spec 10 §6: the token and request-id headers must survive a preflight.
+        allow_headers=list(ALLOWED_REQUEST_HEADERS),
     )
 
     @app.middleware("http")

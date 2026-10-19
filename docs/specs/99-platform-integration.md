@@ -1,5 +1,7 @@
 # Spec 99 — Platform integration endpoint
 
+> **Auth superseded 2026-10-20** by [spec 10](10-platform-contract-v2.md) §4: the endpoint needs a verified bastion token (`iss: "bastion"`, `aud: "paper-trail"`), also under `DEMO_MODE`, which no longer accepts any value.
+
 ## Goal
 
 A single synchronous endpoint `POST /platform/debate` used by the bastion control plane's "Run Integrated Demo" workflow. Runs a capped (max 3 rounds) debate and returns the verdict plus a transcript URL. Guarded by an `X-Platform-Token` JWT unless `DEMO_MODE=true`.
