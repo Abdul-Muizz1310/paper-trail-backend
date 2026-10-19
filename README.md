@@ -43,7 +43,7 @@ The loop runs until `confidence ≥ 0.85` OR `round ≥ max_rounds`, then render
 
 **The transcript is the product.** You read *why* the verdict landed where it did — not just a number.
 
-The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**. The [latest run](evals/report.md) scored **21 / 25 = 84%**, avg 1.3 rounds, p95 45.7s.
+The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**. The [latest run](evals/report.md) (2026-04-09, on the Gemini models the deploy used then) scored **21 / 25 = 84%**, avg 1.3 rounds, p95 45.7s. It has not been re-run on the current free models: a real run spends 100+ requests, twice the free tier's 50 a day.
 
 ---
 
@@ -178,7 +178,7 @@ src/paper_trail/
 | **Agents** | LangGraph (async cyclic StateGraph, parallel branches) |
 | **DB** | Neon Postgres (async SQLAlchemy + asyncpg). One `debates` table; rounds/evidence are JSON columns |
 | **Migrations** | Alembic, auto-applied via Render `preDeployCommand` |
-| **LLM** | OpenRouter — primary `google/gemini-2.0-flash-001`, fallback `google/gemini-2.5-flash-lite`, jittered exp backoff on 429 |
+| **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast `minimax/minimax-m3.1-flash:free`, fallback `google/gemma-4-31b-it:free` (code defaults; `OPENROUTER_MODEL_*` override), jittered exp backoff on 429 |
 | **Search** | Tavily (5 results per sub-question) |
 | **Observability** | LangFuse v3 via OpenTelemetry spans — degrades to no-op on any error |
 | **Cache / Queue** | Upstash Redis — used for rate limiting only. There is **no** evidence/search cache yet |
@@ -279,7 +279,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 348 tests |
+| **Test count** | 385 tests (382 fast, 1 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
@@ -294,7 +294,7 @@ uv run python -m evals.run_eval --delay 10      # 25 claims, real LLM → evals/
 uv run python -m evals.run_eval --max-claims 5  # smoke run
 ```
 
-Real mode **exits non-zero if accuracy < 80%**. Current: **84% (21/25)**. See [`evals/report.md`](evals/report.md).
+Real mode **exits non-zero if accuracy < 80%**. Last measured: **84% (21/25)** on 2026-04-09 with the earlier Gemini models. See [`evals/report.md`](evals/report.md).
 
 CI runs the deterministic `--dry-run` on every push (a smoke check that the harness itself still works); the real-mode 80% accuracy gate is run manually against OpenRouter before tagging a release.
 

@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     # OpenRouter
     openrouter_api_key: str = "test-key"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model_primary: str = "openai/gpt-4o-mini"
-    openrouter_model_fast: str = "openai/gpt-4o-mini"
-    openrouter_model_fallback: str = "anthropic/claude-3-haiku"
+    # Free (`:free`) slugs only, verified live 2026-10-20; the OPENROUTER_MODEL_*
+    # env vars override them (docs/specs/04-llm-router.md "Default slugs").
+    openrouter_model_primary: str = "google/gemma-4-26b-a4b-it:free"
+    openrouter_model_fast: str = "minimax/minimax-m3.1-flash:free"
+    openrouter_model_fallback: str = "google/gemma-4-31b-it:free"
     openrouter_http_referer: str = "https://github.com/Abdul-Muizz1310"
     openrouter_x_title: str = "muizz-lab-portfolio"
     openrouter_timeout_s: float = 60.0

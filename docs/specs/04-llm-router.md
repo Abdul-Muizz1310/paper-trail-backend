@@ -14,6 +14,29 @@ async def chat_json(messages: list[ChatMessage], schema: type[BaseModel], *, mod
 
 `ModelTier = Literal["primary", "fast", "fallback"]` resolves to the env-driven `OPENROUTER_MODEL_*` slugs.
 
+### Default slugs (2026-10-20)
+
+The env vars win; the code defaults apply only when a slot's variable is unset. Every default is a
+`:free` OpenRouter slug (verified live 2026-10-20) — never a paid model, so a deploy that forgets a
+variable cannot start spending money:
+
+| Slot | Env var | Default |
+|---|---|---|
+| primary | `OPENROUTER_MODEL_PRIMARY` | `google/gemma-4-26b-a4b-it:free` |
+| fast | `OPENROUTER_MODEL_FAST` | `minimax/minimax-m3.1-flash:free` |
+| fallback | `OPENROUTER_MODEL_FALLBACK` | `google/gemma-4-31b-it:free` |
+
+The previous defaults (`openai/gpt-4o-mini`, `anthropic/claude-3-haiku`) were paid models, and the
+slugs the README named (`google/gemini-2.0-flash-001`, `google/gemini-2.5-flash-lite`) are no longer
+what the deploy runs.
+
+Cases (`tests/unit/test_config.py`):
+
+- **D1** with no env and no `.env`, the three slots default to the slugs above.
+- **D2** every default ends in `:free` (negative space: no paid default can sneak back in).
+- **D3** each `OPENROUTER_MODEL_*` variable still overrides its slot.
+- **D4** `_resolve_model` maps `primary`/`fast`/`fallback` to the configured slot (existing router tests).
+
 ## Invariants
 
 - All calls go through the OpenRouter `/chat/completions` endpoint at `OPENROUTER_BASE_URL`.
