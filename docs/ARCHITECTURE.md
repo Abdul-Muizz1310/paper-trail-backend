@@ -68,6 +68,7 @@ of this file were not:
 | `platform/middleware.py` | `install_middleware()` | CORS allowlist + `X-Request-Id` propagation | Business logic |
 | `platform/platform_token.py` | `install_platform_token()`, `load_trusted_keys()`, `is_public()`, `principal_of()` | Contract-v2 `X-Platform-Token` middleware: key loading, the method-aware public route list, 401/503 envelopes | Business logic |
 | `platform/token_verifier.py` | `verify_token()`, `Principal`, `TrustedKey` | Pure contract-v2 token checks (alg, signature, iss per key, aud, leeway, lifetime) | I/O, HTTP |
+| `platform/query_observability.py` | `install_query_observability()`, `authorize_bastion()`, `store_url_for()` | slowquery-detective 0.2: per-request query aggregates in schema `slowquery`, `GET /_slowquery/queries` for bastion only | Business logic |
 
 ## Data model
 

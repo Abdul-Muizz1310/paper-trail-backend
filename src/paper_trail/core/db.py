@@ -19,7 +19,7 @@ _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
-def make_engine() -> Any:
+def make_engine() -> AsyncEngine:
     """Create (and memoize) the async SQLAlchemy engine.
 
     On a serverless Postgres (Neon) the proxy drops idle connections and

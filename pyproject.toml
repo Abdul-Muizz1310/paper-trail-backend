@@ -24,6 +24,7 @@ dependencies = [
     "upstash-redis>=1.2",
     "pyyaml>=6.0",
     "pyjwt[crypto]>=2.9",
+    "slowquery-detective[fastapi,postgres]>=0.2,<0.3",
 ]
 # Intentionally NOT declared: voyageai, pgvector, python-jose, tavily-python and
 # tenacity were all listed here but imported nowhere in src/. Tavily is called

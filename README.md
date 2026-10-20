@@ -147,7 +147,8 @@ src/paper_trail/
     ├── metrics.py           # Prometheus /metrics, METRICS_TOKEN gate
     ├── middleware.py        # CORS + X-Request-ID propagation
     ├── platform_token.py    # contract-v2 X-Platform-Token middleware (keys, public routes, 401/503)
-    └── token_verifier.py    # pure contract-v2 token checks → Principal
+    ├── token_verifier.py    # pure contract-v2 token checks → Principal
+    └── query_observability.py # slowquery-detective install, bastion-only measure routes
 ```
 
 ---
@@ -208,6 +209,8 @@ flowchart TD
 ```
 
 Per-query tool failures are surfaced in `node.plan` span metadata (`failed_query_count`, `failed_queries`) instead of being silently swallowed. 🛡️ **Tracing never fails a request** — the wrapper returns a graceful no-op on any LangFuse-side error, init failure, or missing config.
+
+**Per-request query receipts.** [slowquery-detective](https://github.com/Abdul-Muizz1310/slowquery-detective) 0.2 counts every SQL statement against the request's `X-Request-Id`, including the debate's background run that a `POST /debates` starts, and keeps the numbers in this service's own Postgres (schema `slowquery`). `GET /_slowquery/queries?request_id=R` lists what request R caused; it answers bastion-signed tokens only (a frontend token gets 403). See [spec 11](docs/specs/11-query-observability.md).
 
 ---
 
@@ -286,7 +289,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 431 tests (427 fast, 2 integration, 2 smoke) |
+| **Test count** | 443 tests (437 fast, 4 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
