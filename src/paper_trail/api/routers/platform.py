@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from paper_trail.api.deps import get_service
+from paper_trail.api.deps import get_service, require_bastion
 from paper_trail.core.config import settings
-from paper_trail.core.platform_auth import verify_platform_token
 from paper_trail.core.rate_limit import rate_limiter
 from paper_trail.core.signing import SIGNATURE_ALG, public_key_pem
 from paper_trail.schemas.debates import (
@@ -37,31 +35,16 @@ async def receipt_public_key() -> dict[str, str]:
     return {"alg": SIGNATURE_ALG, "public_key": pem}
 
 
-def _extract_bearer(authorization: str | None) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="invalid platform token")
-    parts = authorization.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        raise HTTPException(status_code=401, detail="invalid platform token")
-    return parts[1].strip()
-
-
 @router.post(
     "/debate",
     response_model=PlatformDebateOut,
-    dependencies=[Depends(rate_limiter("platform"))],
+    # Bastion-only (spec 10 §4): checked before the rate limiter counts the call.
+    dependencies=[Depends(require_bastion), Depends(rate_limiter("platform"))],
 )
 async def platform_debate(
     body: PlatformDebateIn,
     service: Annotated[DebateService, Depends(get_service)],
-    authorization: Annotated[str | None, Header()] = None,
 ) -> PlatformDebateOut:
-    token = _extract_bearer(authorization)
-    # Verification may touch the network (URL-based bastion key on a cold
-    # cache); run it off the event loop so it can't stall other requests.
-    if not await asyncio.to_thread(verify_platform_token, token):
-        raise HTTPException(status_code=401, detail="invalid platform token")
-
     requested = body.max_rounds or PLATFORM_MAX_ROUNDS_CAP
     effective_max_rounds = min(requested, PLATFORM_MAX_ROUNDS_CAP)
 

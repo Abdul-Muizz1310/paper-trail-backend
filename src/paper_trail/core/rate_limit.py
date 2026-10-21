@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 
 from paper_trail.core.config import settings
+from paper_trail.platform.token_verifier import BASTION_ISSUER, Principal
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +112,26 @@ def client_identifier(request: Request) -> str:
     return "unknown"
 
 
+def bucket_key(request: Request) -> str:
+    """The caller's bucket (spec 10 §5, contract v2 as amended 2026-10-20).
+
+    bastion's ``sub`` is the visitor's pseudonym, so its tokens bucket on it. A
+    frontend's ``sub`` is the same for every visitor of the site, so its tokens
+    bucket on the issuer plus the one client address its proxy forwards; an
+    anonymous request on that address alone.
+    """
+    principal = getattr(request.state, "platform_principal", None)
+    if not isinstance(principal, Principal):
+        return client_identifier(request)
+    if principal.iss == BASTION_ISSUER:
+        return f"{BASTION_ISSUER}:{principal.sub}"
+    return f"{principal.iss}:{client_identifier(request)}"
+
+
 def rate_limiter(scope: str) -> Any:
-    """Build a FastAPI dependency that throttles by client IP within `scope`."""
+    """Build a FastAPI dependency that throttles each caller within `scope`."""
 
     async def _dependency(request: Request) -> None:
-        await enforce_rate_limit(client_identifier(request), scope=scope)
+        await enforce_rate_limit(bucket_key(request), scope=scope)
 
     return _dependency
