@@ -61,7 +61,7 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - 🔐 Synchronous endpoint for bastion integrations — bastion-signed tokens only
 - 🧾 Ed25519-signed transcript receipts — `transcript.json` carries a signature over the canonical transcript; verify against the key at `GET /platform/receipt-public-key`
 - ⏱️ Redis-backed (Upstash) per-caller rate limiting in front of both debate-creation endpoints — bastion callers by their visitor pseudonym (`bastion:{sub}`), frontend callers by the one address its proxy forwards (`paper-trail-frontend:{address}`), anonymous requests by `X-Forwarded-For` / `X-Real-IP`, so behind Render's edge proxy each client still gets its own bucket instead of everyone sharing the proxy's
-- 🔁 OpenRouter primary → fallback cascade with jittered backoff on 429, bounded by a per-debate wall-clock deadline; a JSON reply the schema cannot read also falls through to the fallback (a fenced or one-element-array reply is unwrapped first)
+- 🔁 OpenRouter PRIMARY → FAST → FALLBACK cascade: a 429, a 5xx, a timeout or a dropped connection is retried on the same model with jittered backoff, then the next tier is asked (a model two tiers share is called once); one node's LLM calls are bounded at 120 s and a debate at 300 s; a JSON reply the schema cannot read also falls through to the fallback (a fenced or one-element-array reply is unwrapped first)
 - ✅ Red-first TDD — failing test lands before every feature
 - 🚀 Render one-click deploy; the container entrypoint runs `alembic upgrade head` on every boot (a no-op at head; a failed migration aborts the boot)
 
@@ -180,7 +180,7 @@ src/paper_trail/
 | **Agents** | LangGraph (async cyclic StateGraph, parallel branches) |
 | **DB** | Neon Postgres (async SQLAlchemy + asyncpg). One `debates` table; rounds/evidence are JSON columns |
 | **Migrations** | Alembic, applied by `docker-entrypoint.sh` on every container boot (Render's free plan never runs a `preDeployCommand`) |
-| **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast `minimax/minimax-m3.1-flash:free`, fallback `google/gemma-4-31b-it:free` (code defaults; `OPENROUTER_MODEL_*` override), jittered exp backoff on 429 |
+| **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast and fallback `minimax/minimax-m3.1-flash:free` (code defaults; `OPENROUTER_MODEL_*` override). Cascade PRIMARY → FAST → FALLBACK, each model once; 429 / 5xx / timeouts retried with jittered backoff before moving on; one node's LLM work bounded at 120 s |
 | **Search** | Tavily (5 results per sub-question) |
 | **Observability** | LangFuse v3 via OpenTelemetry spans — degrades to no-op on any error |
 | **Cache / Queue** | Upstash Redis — used for rate limiting only. There is **no** evidence/search cache yet |
@@ -289,7 +289,7 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 443 tests (437 fast, 4 integration, 2 smoke) |
+| **Test count** | 459 tests (453 fast, 4 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
 | **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |

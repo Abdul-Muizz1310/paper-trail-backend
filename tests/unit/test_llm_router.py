@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+from typing import Any
+
 import httpx
 import pytest
 import respx
@@ -109,15 +114,25 @@ async def test_chat_json_schema_mismatch_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=False)
-def _no_sleep(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
-    """Skip real sleeps so retry loops finish instantly."""
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Skip backoff sleeps so retry loops finish instantly; record what would have been slept."""
+    slept: list[float] = []
 
-    async def _noop(_seconds: float) -> None:
-        return None
+    async def _noop(seconds: float) -> None:
+        slept.append(seconds)
 
-    monkeypatch.setattr(llm_mod.asyncio, "sleep", _noop)
-    return _noop
+    monkeypatch.setattr(llm_mod, "_backoff_sleep", _noop)
+    return slept
+
+
+@pytest.fixture(autouse=True)
+def _distinct_tiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three different slugs, so a test can tell the tiers apart by the model it was sent."""
+    monkeypatch.setattr(settings, "openrouter_model_primary", "p/primary:free")
+    monkeypatch.setattr(settings, "openrouter_model_fast", "f/fast:free")
+    monkeypatch.setattr(settings, "openrouter_model_fallback", "b/fallback:free")
+    monkeypatch.setattr(settings, "llm_node_deadline_s", 120.0)
 
 
 @respx.mock
@@ -211,7 +226,7 @@ async def test_chat_json_falls_back_when_primary_raises() -> None:
 
 
 @respx.mock
-async def test_one_call_with_retry_retries_on_429_then_succeeds(_no_sleep) -> None:  # type: ignore[no-untyped-def]
+async def test_a_429_is_retried_on_the_same_tier_then_succeeds(_no_sleep) -> None:  # type: ignore[no-untyped-def]
     calls = {"i": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -302,7 +317,7 @@ async def test_j3_unusable_primary_reply_asks_the_fallback_once(bad_primary: str
     respx.post(_chat_url()).mock(side_effect=handler)
     result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
     assert result == _Schema(answer="yes", score=3)
-    assert models == [settings.openrouter_model_primary, settings.openrouter_model_fallback]
+    assert models == [settings.openrouter_model_primary, settings.openrouter_model_fast]
 
 
 @pytest.mark.parametrize(
@@ -310,14 +325,211 @@ async def test_j3_unusable_primary_reply_asks_the_fallback_once(bad_primary: str
     [("still not json", "invalid_json"), ('{"wrong": 1}', "schema_mismatch")],
 )
 @respx.mock
-async def test_j4_both_replies_unusable_raises_the_fallbacks_stage(
+async def test_j4_every_reply_unusable_exhausts_the_cascade(
     fallback_reply: str, stage: str
 ) -> None:
-    replies = iter(['{"wrong": "field"}', fallback_reply])
+    replies = iter(['{"wrong": "field"}', "not json", fallback_reply])
     route = respx.post(_chat_url()).mock(
         side_effect=lambda _req: httpx.Response(200, json=_resp(next(replies)))
     )
     with pytest.raises(LLMError) as exc:
         await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
-    assert exc.value.stage == stage
-    assert route.call_count == 2
+    assert exc.value.stage == "all_models_exhausted"
+    assert exc.value.detail == f"primary=schema_mismatch; fast=invalid_json; fallback={stage}"
+    assert route.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# The cascade (spec 04, 2026-10-21): PRIMARY -> FAST -> FALLBACK on 429/5xx
+# ---------------------------------------------------------------------------
+
+
+def _by_model(replies: dict[str, Any]) -> tuple[list[str], Any]:
+    """A respx handler answering per model; returns (models called, handler).
+
+    A reply is an httpx.Response, an exception to raise, or a list of either,
+    consumed one per call (the last one repeats).
+    """
+    models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        models.append(model)
+        reply = replies[model]
+        if isinstance(reply, list):
+            reply = reply.pop(0) if len(reply) > 1 else reply[0]
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    return models, handler
+
+
+def _ok(content: str) -> httpx.Response:
+    return httpx.Response(200, json=_resp(content))
+
+
+@respx.mock
+async def test_c1_504_on_every_primary_attempt_cascades_to_the_fast_tier(
+    _no_sleep: list[float],
+) -> None:
+    models, handler = _by_model(
+        {"p/primary:free": httpx.Response(504), "f/fast:free": _ok("from fast")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert models == ["p/primary:free"] * 5 + ["f/fast:free"]
+    assert len(_no_sleep) == 4  # backoff between the five primary attempts
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@respx.mock
+async def test_c2_every_tier_5xx_exhausts_after_retrying_each(status: int) -> None:
+    models, handler = _by_model(
+        {m: httpx.Response(status) for m in ("p/primary:free", "f/fast:free", "b/fallback:free")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    with pytest.raises(LLMError) as exc:
+        await llm_mod.chat([{"role": "user", "content": "q"}])
+    assert exc.value.stage == "all_models_exhausted"
+    assert exc.value.detail == "primary=server_error; fast=server_error; fallback=server_error"
+    assert models == ["p/primary:free"] * 5 + ["f/fast:free"] * 5 + ["b/fallback:free"] * 5
+
+
+@respx.mock
+async def test_c3_a_timeout_counts_as_a_5xx() -> None:
+    models, handler = _by_model(
+        {"p/primary:free": httpx.ReadTimeout("slow"), "f/fast:free": _ok("from fast")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert models == ["p/primary:free"] * 5 + ["f/fast:free"]
+
+
+@respx.mock
+async def test_c4_a_transient_504_is_retried_on_the_same_tier_first(
+    _no_sleep: list[float],
+) -> None:
+    models, handler = _by_model({"p/primary:free": [httpx.Response(504), _ok("primary again")]})
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "primary again"
+    assert models == ["p/primary:free", "p/primary:free"]
+    assert len(_no_sleep) == 1
+
+
+@respx.mock
+async def test_c5_a_400_moves_on_without_a_retry(_no_sleep: list[float]) -> None:
+    models, handler = _by_model(
+        {"p/primary:free": httpx.Response(400), "f/fast:free": _ok("from fast")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert models == ["p/primary:free", "f/fast:free"]
+    assert _no_sleep == []
+
+
+@respx.mock
+async def test_c6_chat_json_cascades_on_504_too() -> None:
+    models, handler = _by_model(
+        {"p/primary:free": httpx.Response(504), "f/fast:free": _ok(_PLAN_LIKE)}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    assert result == _Schema(answer="yes", score=3)
+    assert models[-1] == "f/fast:free"
+
+
+@respx.mock
+async def test_c7_a_fast_request_cascades_fast_then_primary_then_fallback() -> None:
+    models, handler = _by_model(
+        {m: httpx.Response(502) for m in ("p/primary:free", "f/fast:free", "b/fallback:free")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    with pytest.raises(LLMError) as exc:
+        await llm_mod.chat([{"role": "user", "content": "q"}], model="fast")
+    assert exc.value.detail == "fast=server_error; primary=server_error; fallback=server_error"
+    assert models == ["f/fast:free"] * 5 + ["p/primary:free"] * 5 + ["b/fallback:free"] * 5
+
+
+@respx.mock
+async def test_c8_a_model_two_tiers_share_is_called_as_one_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openrouter_model_fallback", "f/fast:free")
+    models, handler = _by_model(
+        {"p/primary:free": httpx.Response(502), "f/fast:free": httpx.Response(504)}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    with pytest.raises(LLMError) as exc:
+        await llm_mod.chat([{"role": "user", "content": "q"}])
+    assert exc.value.detail == "primary=server_error; fast=server_error"
+    assert models == ["p/primary:free"] * 5 + ["f/fast:free"] * 5
+
+
+async def test_c9_hanging_tiers_are_cut_at_the_node_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_node_deadline_s", 0.3)
+    called: list[str] = []
+
+    async def _hang(messages: Any, model: str, temperature: float, *, json_mode: bool) -> str:
+        called.append(model)
+        await asyncio.sleep(10)
+        return "never"
+
+    monkeypatch.setattr(llm_mod, "_one_call", _hang)
+    started = time.monotonic()
+    with pytest.raises(LLMError) as exc:
+        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    assert time.monotonic() - started < 1.0
+    assert exc.value.stage == "all_models_exhausted"
+    assert exc.value.detail == "primary=timeout; fast=timeout; fallback=timeout"
+    assert called == ["p/primary:free", "f/fast:free", "b/fallback:free"]
+
+
+@respx.mock
+async def test_c10_a_backoff_that_outlasts_the_tiers_share_is_not_slept(
+    monkeypatch: pytest.MonkeyPatch, _no_sleep: list[float]
+) -> None:
+    # 3 s for three tiers: 1 s each, shorter than the first 1.5 s backoff.
+    monkeypatch.setattr(settings, "llm_node_deadline_s", 3.0)
+    models, handler = _by_model(
+        {"p/primary:free": httpx.Response(503), "f/fast:free": _ok("from fast")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert models == ["p/primary:free", "f/fast:free"]
+    assert _no_sleep == []
+
+
+def test_c_cascade_order_is_pure_and_skips_repeated_models() -> None:
+    assert llm_mod.cascade_order("primary", {"primary": "a", "fast": "b", "fallback": "c"}) == [
+        ("primary", "a"),
+        ("fast", "b"),
+        ("fallback", "c"),
+    ]
+    assert llm_mod.cascade_order("fallback", {"primary": "a", "fast": "b", "fallback": "c"}) == [
+        ("fallback", "c"),
+        ("primary", "a"),
+        ("fast", "b"),
+    ]
+    assert llm_mod.cascade_order("primary", {"primary": "a", "fast": "a", "fallback": "a"}) == [
+        ("primary", "a")
+    ]
+
+
+async def test_c11_a_tier_that_starts_with_no_time_left_makes_no_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[str] = []
+
+    async def _never(messages: Any, model: str, temperature: float, *, json_mode: bool) -> str:
+        called.append(model)
+        return "never"
+
+    monkeypatch.setattr(llm_mod, "_one_call", _never)
+    already_over = asyncio.get_running_loop().time() - 1.0
+    with pytest.raises(LLMError) as exc:
+        await llm_mod._call_tier([], "p/primary:free", 0.2, json_mode=False, until=already_over)
+    assert exc.value.stage == "timeout"
+    assert called == []

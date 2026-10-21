@@ -28,7 +28,7 @@ def test_demo_mode_defaults_false() -> None:
 _FREE_DEFAULTS = {
     "openrouter_model_primary": "google/gemma-4-26b-a4b-it:free",
     "openrouter_model_fast": "minimax/minimax-m3.1-flash:free",
-    "openrouter_model_fallback": "google/gemma-4-31b-it:free",
+    "openrouter_model_fallback": "minimax/minimax-m3.1-flash:free",
 }
 
 
@@ -59,3 +59,15 @@ def test_d3_env_overrides_each_model_slot(monkeypatch) -> None:  # type: ignore[
         "vendor/fast:free",
         "vendor/fallback:free",
     )
+
+
+def test_the_llm_node_deadline_defaults_to_120_s_and_must_be_positive() -> None:
+    import pydantic
+
+    assert Settings(_env_file=None).llm_node_deadline_s == 120.0  # type: ignore[call-arg]
+    for bad in (0, -1):
+        try:
+            Settings(_env_file=None, llm_node_deadline_s=bad)  # type: ignore[call-arg]
+        except pydantic.ValidationError:
+            continue
+        raise AssertionError(f"llm_node_deadline_s={bad} was accepted")

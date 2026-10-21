@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,10 +25,15 @@ class Settings(BaseSettings):
     # env vars override them (docs/specs/04-llm-router.md "Default slugs").
     openrouter_model_primary: str = "google/gemma-4-26b-a4b-it:free"
     openrouter_model_fast: str = "minimax/minimax-m3.1-flash:free"
-    openrouter_model_fallback: str = "google/gemma-4-31b-it:free"
+    # gemma-4-31b answered 502 live on 2026-10-21; the cascade calls a model once,
+    # so sharing the fast slug costs nothing.
+    openrouter_model_fallback: str = "minimax/minimax-m3.1-flash:free"
     openrouter_http_referer: str = "https://github.com/Abdul-Muizz1310"
     openrouter_x_title: str = "muizz-lab-portfolio"
     openrouter_timeout_s: float = 60.0
+    # Bound on one chat/chat_json call (one node's LLM work) across every tier
+    # of the cascade; each tier gets an equal share of what is left (spec 04).
+    llm_node_deadline_s: float = Field(default=120.0, gt=0)
 
     # Tavily
     tavily_api_key: str = "test-tavily"
