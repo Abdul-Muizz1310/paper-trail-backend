@@ -1,4 +1,12 @@
-"""LLM router over OpenRouter with primary->fallback retry and JSON mode."""
+"""LLM router over OpenRouter: a PRIMARY -> FAST -> FALLBACK cascade with JSON mode.
+
+docs/specs/04-llm-router.md, "The cascade": transient failures (429, any 5xx,
+a timeout, a dropped connection) are retried on the same tier with jittered
+exponential backoff, then the next tier is asked; any other failure moves on at
+once. ``all_models_exhausted`` only after every tier has failed. One call is
+bounded by ``settings.llm_node_deadline_s`` (each tier gets an equal share of
+what is left), so a node cannot hang on a dead upstream.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,7 @@ import asyncio
 import json
 import random
 import re
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal, TypedDict
 
 import httpx
@@ -15,14 +24,17 @@ from paper_trail.core.config import settings
 from paper_trail.core.errors import LLMError
 from paper_trail.core.langfuse import span, update_current_span
 
-# Retry policy for transient 429s on a single model tier.
-# OpenRouter free tiers are bursty (~1-2 req/s per upstream) and proponent/
-# skeptic nodes run in parallel, so without jitter they race each other
-# into the same backoff window. Exponential backoff with jitter desyncs
-# parallel callers and handles sustained bursts up to ~30s.
-_RATE_LIMIT_RETRIES = 5
-_RATE_LIMIT_BACKOFF_BASE_S = 1.5
-_RATE_LIMIT_JITTER_S = 0.75
+# Retry policy on one tier. OpenRouter free tiers are bursty (~1-2 req/s per
+# upstream) and the proponent/skeptic nodes run in parallel, so without jitter
+# they race each other into the same backoff window.
+_ATTEMPTS_PER_TIER = 5
+_BACKOFF_BASE_S = 1.5
+_BACKOFF_JITTER_S = 0.75
+# Failures worth retrying on the same model; anything else moves to the next tier.
+_TRANSIENT_STAGES = frozenset({"rate_limited", "server_error", "timeout", "http_error"})
+
+# Test seam: backoff sleeps go through here, never through the event loop's own timers.
+_backoff_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 
 ModelTier = Literal["primary", "fast", "fallback"]
@@ -37,13 +49,31 @@ class ChatMessage(TypedDict):
     content: str
 
 
-def _resolve_model(tier: ModelTier) -> str:
-    mapping = {
+_CASCADE: tuple[ModelTier, ...] = ("primary", "fast", "fallback")
+
+
+def _configured_models() -> dict[ModelTier, str]:
+    return {
         "primary": settings.openrouter_model_primary,
         "fast": settings.openrouter_model_fast,
         "fallback": settings.openrouter_model_fallback,
     }
-    return mapping[tier]
+
+
+def cascade_order(
+    requested: ModelTier, models: Mapping[ModelTier, str]
+) -> list[tuple[ModelTier, str]]:
+    """The tiers to try: the requested one, then PRIMARY -> FAST -> FALLBACK; a model once."""
+    order = [requested, *(tier for tier in _CASCADE if tier != requested)]
+    tried: set[str] = set()
+    out: list[tuple[ModelTier, str]] = []
+    for tier in order:
+        model = models[tier]
+        if model in tried:
+            continue
+        tried.add(model)
+        out.append((tier, model))
+    return out
 
 
 def _headers() -> dict[str, str]:
@@ -115,27 +145,68 @@ async def _one_call(
         return completion
 
 
-async def _one_call_with_retry(
+def _backoff_s(attempt: int) -> float:
+    return _BACKOFF_BASE_S * float(1 << attempt) + random.random() * _BACKOFF_JITTER_S
+
+
+async def _call_tier(
     messages: list[ChatMessage],
     model: str,
     temperature: float,
     *,
     json_mode: bool,
+    until: float,
 ) -> str:
-    last: LLMError | None = None
-    for attempt in range(_RATE_LIMIT_RETRIES):
+    """Ask one model until it answers, a non-transient failure, or its time share ends."""
+    loop = asyncio.get_running_loop()
+    last = LLMError("timeout", "no time left for this tier")
+    for attempt in range(_ATTEMPTS_PER_TIER):
+        left = until - loop.time()
+        if left <= 0:
+            break
         try:
-            return await _one_call(messages, model, temperature, json_mode=json_mode)
+            async with asyncio.timeout(left):
+                return await _one_call(messages, model, temperature, json_mode=json_mode)
+        except TimeoutError:
+            last = LLMError("timeout", f"{model}: tier time share spent")
         except LLMError as exc:
-            if exc.stage != "rate_limited":
+            if exc.stage not in _TRANSIENT_STAGES:
                 raise
             last = exc
-            if attempt < _RATE_LIMIT_RETRIES - 1:
-                delay = _RATE_LIMIT_BACKOFF_BASE_S * (2**attempt)
-                delay += random.random() * _RATE_LIMIT_JITTER_S
-                await asyncio.sleep(delay)
-    assert last is not None
+        if attempt == _ATTEMPTS_PER_TIER - 1:
+            break
+        delay = _backoff_s(attempt)
+        if loop.time() + delay >= until:
+            break
+        await _backoff_sleep(delay)
     raise last
+
+
+async def _cascade[ResultT](
+    messages: list[ChatMessage],
+    requested: ModelTier,
+    temperature: float,
+    *,
+    json_mode: bool,
+    read: Callable[[str], ResultT],
+) -> ResultT:
+    """Run the cascade; ``read`` turns a reply into the result or raises ``LLMError``."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + settings.llm_node_deadline_s
+    tiers = cascade_order(requested, _configured_models())
+    failures: list[str] = []
+    last: LLMError | None = None
+    for index, (tier, model) in enumerate(tiers):
+        share = (deadline - loop.time()) / (len(tiers) - index)
+        try:
+            raw = await _call_tier(
+                messages, model, temperature, json_mode=json_mode, until=loop.time() + share
+            )
+            return read(raw)
+        except LLMError as exc:
+            failures.append(f"{tier}={exc.stage}")
+            last = exc
+    raise LLMError("all_models_exhausted", "; ".join(failures)) from last
 
 
 async def chat(
@@ -144,24 +215,8 @@ async def chat(
     model: ModelTier = "primary",
     temperature: float = 0.2,
 ) -> str:
-    """Call OpenRouter with primary->fallback retry."""
-    try:
-        return await _one_call_with_retry(
-            messages, _resolve_model(model), temperature, json_mode=False
-        )
-    except LLMError as primary_err:
-        try:
-            return await _one_call_with_retry(
-                messages,
-                _resolve_model("fallback"),
-                temperature,
-                json_mode=False,
-            )
-        except LLMError as fallback_err:
-            raise LLMError(
-                "all_models_exhausted",
-                f"primary={primary_err.detail}; fallback={fallback_err.detail}",
-            ) from fallback_err
+    """Call OpenRouter through the cascade, starting at tier ``model``."""
+    return await _cascade(messages, model, temperature, json_mode=False, read=lambda raw: raw)
 
 
 def parse_json_reply[SchemaT: BaseModel](raw: str, schema: type[SchemaT]) -> SchemaT:
@@ -195,22 +250,15 @@ async def chat_json[SchemaT: BaseModel](
     model: ModelTier = "primary",
     temperature: float = 0.2,
 ) -> SchemaT:
-    """Call OpenRouter in JSON mode and validate against a Pydantic schema.
+    """Call OpenRouter in JSON mode through the cascade and validate against ``schema``.
 
-    An unusable reply from the first tier (one ``parse_json_reply`` rejects)
-    counts as a failed tier, like a 429 or a 5xx: the fallback tier is asked
-    once, and its failure is the one raised.
+    A reply ``parse_json_reply`` rejects counts as a failed tier, like a 429 or
+    a 5xx, but is not retried on the same model: the next tier is asked.
     """
-    try:
-        raw = await _one_call_with_retry(
-            messages, _resolve_model(model), temperature, json_mode=True
-        )
-        return parse_json_reply(raw, schema)
-    except LLMError:
-        raw = await _one_call_with_retry(
-            messages,
-            _resolve_model("fallback"),
-            temperature,
-            json_mode=True,
-        )
-        return parse_json_reply(raw, schema)
+    return await _cascade(
+        messages,
+        model,
+        temperature,
+        json_mode=True,
+        read=lambda raw: parse_json_reply(raw, schema),
+    )
