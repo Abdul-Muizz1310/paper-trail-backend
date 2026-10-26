@@ -124,7 +124,9 @@ Fast tier (`tests/unit/test_tracing.py`, a client on an in-memory exporter — n
   still raised. Every tier hanging past a 0.3 s node deadline → one generation per tier, each
   `ERROR` with `cancelled before the model answered`.
 - **T8** a reply with `reasoning` → the output message carries it; a 200 whose completion is
-  `null` or blank → `bad_response`, the next tier is asked (spec 04 rule 3).
+  `null` or blank → `bad_response`, the next tier is asked (spec 04 rule 3). A 200 carrying
+  OpenRouter's error object is an `ERROR` generation named by its code
+  (`rate_limited: status=429 in the reply body: …`), not `bad_response`.
 - **T9** `search-web`: a `tool` with `{query, k}` in and `{hit_count, titles}` out; a Tavily 500 →
   `ERROR`, `ToolError` raised.
 - **T10** `fetch-article`: a `tool` with `{url}` in and `{char_count}` out; a failed fetch →

@@ -90,6 +90,11 @@ FALLBACK on a 429 or a 5xx.
    backoff `1.5 s × 2^n` plus up to 0.75 s jitter), then the cascade moves to the next tier.
 3. **Other failures** — a 4xx other than 429, a 200 without a completion, a JSON reply the schema
    cannot read — move to the next tier at once (retrying the same model would get the same answer).
+   **A 200 whose body is OpenRouter's error object** (`{"error": {"code": 429, "message": …}}`,
+   how OpenRouter reports an upstream failure it hit after answering 200) is that error, not a
+   malformed reply: its `code` decides as a status would (429 and 5xx are transient, any other code
+   moves on at once, no code moves on as `upstream_error`), and the stage names it, for example
+   `rate_limited: status=429 in the reply body: Rate limit exceeded` (2026-10-26).
 4. **Exhaustion.** Only when every tier has failed: `LLMError("all_models_exhausted",
    "primary=<stage>; fast=<stage>; …")`.
 5. **Time bound.** One `chat`/`chat_json` call — one node's LLM work, since each node makes one —
@@ -115,6 +120,9 @@ Cases (`tests/unit/test_llm_router.py`):
 - **C9** every tier hanging → `all_models_exhausted` within the deadline (a 0.3 s deadline answers
   in well under a second), each tier having been tried.
 - **C10** a backoff that would outlast the tier's share is not slept.
+- **C12** a 200 carrying `{"error": {"code": 429, …}}` then a 200 with a completion → answered by
+  the same tier after one backoff; `{"error": {"code": 400, …}}` → the next tier at once;
+  `{"error": {"message": …}}` without a code → the next tier at once, stage `upstream_error`.
 - **C11** a tier that starts with no time left is given up as `timeout` without a call; the bound
   must be positive (`LLM_NODE_DEADLINE_S` ≤ 0 is rejected at startup).
 
