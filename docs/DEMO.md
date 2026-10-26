@@ -94,10 +94,10 @@ Fetch the transcript the same way as above via `$BASE/debates/$ID/transcript.md`
 ## What to point to in an interview / demo
 
 - **LangGraph cycle, not a loop.** The `judge → proponent/skeptic` back-edge is a real `add_conditional_edges` call in [`src/paper_trail/agents/graph.py`](../src/paper_trail/agents/graph.py). Walk the reviewer through `is_converged` and the `need_more` router.
-- **Parallel evidence construction.** Proponent and Skeptic run concurrently from the `plan` node — the LangFuse trace shows two overlapping `llm.chat` generations under the same round.
+- **Parallel evidence construction.** Proponent and Skeptic run concurrently from the `plan` node — the Langfuse trace shows `argue-for` and `argue-against` overlapping, each with its own `write-argument` generation.
 - **Evals, not vibes.** [`evals/report.md`](../evals/report.md) has the real 25-claim accuracy (21/25 = 84%) with per-claim wall time and rounds. Run `uv run python -m evals.run_eval` to reproduce.
 - **Honest, rubric-driven prompts.** Open [`src/paper_trail/agents/prompts/judge.md`](../src/paper_trail/agents/prompts/judge.md). Note the explicit rule that common misconceptions are `FALSE` (not `INCONCLUSIVE`) and the 0.55–1.00 banded confidence rubric.
-- **Observability-first.** Every debate produces a LangFuse trace with `debate.run` at the root, nested `node.*` spans beneath it, `llm.json`/`llm.chat` generations with full messages + token usage, and `tool.search` spans per Tavily call. Trace-level tags include `verdict:*`, `model_primary:*`, `status:done|error`, and the `session_id` is the debate UUID so you can filter by session.
+- **Observability-first.** Every debate is one Langfuse trace: `run-debate` at the root with the claim in and the verdict out, an `agent` per debate role, a `generation` per model attempt (model, messages, reply, tokens, cost; failed attempts at level `ERROR`), and `search-web` / `fetch-article` tools. Tags `paper-trail` and `entry:*`, `debate_id` metadata and the environment are on every observation; the session is the request's `X-Request-Id`, so a bastion dossier groups across products ([spec 12](specs/12-tracing.md)).
 - **Negative-space correctness.** Malformed bodies → `422` from Pydantic v2 DTOs. Missing bearer token on `/platform/debate` → `401`. `max_rounds > 10` → `422`. `DATABASE_URL` missing at alembic boot → clear error, not silent fallthrough. See the [red-test commits](https://github.com/Abdul-Muizz1310/paper-trail-backend/commits/main?after=2024) for every failure case enumerated before implementation.
 
 ## A few claims that demo well
@@ -114,5 +114,5 @@ Fetch the transcript the same way as above via `$BASE/debates/$ID/transcript.md`
 
 - **First call is slow (~20s extra):** Render free tier cold-starts the container. Second call onward is fast.
 - **`HTTP 500` on `GET /debates`:** transient DB connection hiccup on cold start; retry once.
-- **`verdict: INCONCLUSIVE` when you expected a clear answer:** the primary model may have 429'd and fallen through to the fallback on every LLM call. Check the trace in LangFuse — if most generations are on the fallback model, upgrade OpenRouter BYOK or wait for rate limits to reset.
-- **Nothing in LangFuse:** confirm `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` are set in the Render dashboard. The wrapper degrades to a silent no-op on missing config (by design — tracing must never fail a request).
+- **`verdict: INCONCLUSIVE` when you expected a clear answer:** the primary model may have 429'd and fallen through to the fallback on every LLM call. Check the trace in Langfuse — the `ERROR` generations name the model and stage that failed (`rate_limited: status=429`), and their `tier` metadata shows how far down the cascade each call fell.
+- **Nothing in Langfuse:** confirm `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` are set in the Render dashboard (the project is on US Cloud: `https://us.cloud.langfuse.com`). Without both keys tracing is a no-op by design; filter the Langfuse UI by environment `production`.

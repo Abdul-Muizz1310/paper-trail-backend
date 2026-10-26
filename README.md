@@ -9,7 +9,7 @@
 ![fastapi](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![langgraph](https://img.shields.io/badge/LangGraph-1c3c3c?style=flat-square)
 ![neon](https://img.shields.io/badge/Neon-Postgres-00e599?style=flat-square&logo=postgresql&logoColor=white)
-![langfuse](https://img.shields.io/badge/LangFuse-v3-f9a825?style=flat-square)
+![langfuse](https://img.shields.io/badge/Langfuse-v4%20%C2%B7%20SDK%20v5-f9a825?style=flat-square)
 [![ci](https://github.com/Abdul-Muizz1310/paper-trail-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Abdul-Muizz1310/paper-trail-backend/actions/workflows/ci.yml)
 ![coverage](https://img.shields.io/badge/coverage-99%25-brightgreen?style=flat-square)
 ![eval](https://img.shields.io/badge/eval-84%25%20(21%2F25)-brightgreen?style=flat-square)
@@ -53,8 +53,8 @@ The ship-gate was concrete: **≥ 80% accuracy on a labeled 25-claim eval set**.
 - ⚡ Parallel Proponent ‖ Skeptic execution inside every round
 - 🔎 Live Tavily web search grounded per sub-question
 - 📝 Deterministic markdown transcript with inline citations
-- 🔭 Full OpenTelemetry → LangFuse trace per debate (nodes, tools, generations)
-- 🛡️ Graceful observability — tracing never fails a request
+- 🔭 One Langfuse trace per debate: every agent, tool call and model attempt, with tokens and cost
+- 🛡️ Tracing never changes a debate's outcome; without Langfuse keys it is a no-op
 - 📡 SSE streaming endpoint for live UI updates — each round commits as it's produced (per-write sessions), so progress is genuinely live, not batched at the end
 - 📄 Cursor-paginated debate history
 - 🔐 Platform token contract v2 on every non-public route: an Ed25519 JWT from bastion or this product's own frontend, `aud` = `paper-trail`, 10 s leeway, fails closed (503) when no key is configured ([spec 10](docs/specs/10-platform-contract-v2.md)); the receipt surfaces (`transcript.json`, `transcript.md`, the receipt key) stay public
@@ -100,7 +100,7 @@ flowchart TD
     Graph --> Nodes[agents/nodes<br/>plan · proponent · skeptic · judge · render]
     Nodes --> LLM[core/llm<br/>OpenRouter cascade]
     Nodes --> Search[tools/search<br/>Tavily]
-    Services --> Tracing[core/langfuse<br/>OTel spans]
+    Services --> Tracing[core/tracing<br/>Langfuse SDK v5]
 ```
 
 > **Rule:** `routers → services → repositories → models`. No layer reaches across. Controllers never touch the DB; models never know HTTP.
@@ -136,10 +136,10 @@ src/paper_trail/
 │   ├── config.py            # pydantic-settings from .env
 │   ├── db.py                # async_sessionmaker + engine + session_scope
 │   ├── llm.py               # OpenRouter client w/ cascade + jittered retry
-│   ├── langfuse.py          # OTel trace wrapper (graceful no-op)
 │   ├── prompts.py           # Loader for agents/prompts/*.md
 │   ├── rate_limit.py        # Upstash fixed-window per-caller throttle
 │   ├── signing.py           # Ed25519 transcript receipt signing
+│   ├── tracing.py           # Langfuse client, the debate trace, usage/cost buckets
 │   └── errors.py            # ToolError, LLMError, InvalidCursorError
 └── platform/                # Cross-cutting platform surface (not business logic)
     ├── health.py            # /health (real SELECT 1 probe), /version
@@ -182,7 +182,7 @@ src/paper_trail/
 | **Migrations** | Alembic, applied by `docker-entrypoint.sh` on every container boot (Render's free plan never runs a `preDeployCommand`) |
 | **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast and fallback `minimax/minimax-m3.1-flash:free` (code defaults; `OPENROUTER_MODEL_*` override). Cascade PRIMARY → FAST → FALLBACK, each model once; 429 / 5xx / timeouts retried with jittered backoff before moving on; one node's LLM work bounded at 120 s |
 | **Search** | Tavily (5 results per sub-question) |
-| **Observability** | LangFuse v3 via OpenTelemetry spans — degrades to no-op on any error |
+| **Observability** | Langfuse v4 through Python SDK v5 (OpenTelemetry under the hood) — one trace per debate; a no-op without keys |
 | **Cache / Queue** | Upstash Redis — used for rate limiting only. There is **no** evidence/search cache yet |
 | **Tests** | pytest-asyncio + respx (HTTP) + in-memory SQLite; Testcontainers Postgres for the integration tier |
 | **Lint / Types** | ruff (strict) · mypy (strict) |
@@ -191,24 +191,35 @@ src/paper_trail/
 
 ## 🔭 Observability
 
-Every debate emits a full OpenTelemetry-backed trace to LangFuse:
+Every debate is one [Langfuse](https://langfuse.com) trace (Langfuse v4, Python SDK v5), shaped like
+the debate that ran — [spec 12](docs/specs/12-tracing.md):
 
 ```mermaid
 flowchart TD
-    Trace[debate.run<br/>tags=verdict,model,env<br/>session_id=debate_id]
-    Trace --> NPlan[node.plan]
-    Trace --> NPro[node.proponent]
-    Trace --> NSke[node.skeptic]
-    Trace --> NJud[node.judge]
-    Trace --> NRen[node.render]
-    NPlan --> LPlan[llm.json]
-    NPlan --> TSearch[tool.search × N]
-    NPro --> LPro[llm.chat]
-    NSke --> LSke[llm.chat]
-    NJud --> LJud[llm.json]
+    Trace["run-debate · agent<br/>in: claim · out: verdict, confidence"]
+    Trace --> NPlan["plan-debate · agent"]
+    Trace --> NPro["argue-for · agent"]
+    Trace --> NSke["argue-against · agent"]
+    Trace --> NJud["judge-round · agent"]
+    Trace --> NRen["render-transcript · chain"]
+    NPlan --> LPlan["decompose-claim · generation"]
+    NPlan --> TSearch["search-web · tool × N"]
+    NPlan --> TFetch["fetch-article · tool × N"]
+    NPro --> LPro["write-argument · generation"]
+    NSke --> LSke["write-argument · generation"]
+    NJud --> LJud["score-round · generation"]
 ```
 
-Per-query tool failures are surfaced in `node.plan` span metadata (`failed_query_count`, `failed_queries`) instead of being silently swallowed. 🛡️ **Tracing never fails a request** — the wrapper returns a graceful no-op on any LangFuse-side error, init failure, or missing config.
+- **Every model attempt is its own generation** — the model it asked, the messages, the reply (and
+  the model's reasoning when it returns one), token usage as exclusive buckets (cached and
+  reasoning tokens split out), OpenRouter's reported cost, and its cascade `tier` and `attempt`. A
+  429, a 5xx or an attempt cut off by the deadline is a generation at level `ERROR`.
+- **Trace attributes on every observation:** tags `paper-trail` and `entry:api|platform|eval`,
+  `debate_id` metadata, environment = `APP_ENV`, release = the deployed commit. The session is the
+  request's `X-Request-Id`, so a bastion dossier's traces across products group into one session.
+- **Failures are visible, never fatal:** a failed search or fetch is an `ERROR` tool and turns
+  `plan-debate` into a `WARNING`; a failed debate is an `ERROR` trace. Tracing never changes a
+  debate's outcome, and without `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` it is a no-op.
 
 **Per-request query receipts.** [slowquery-detective](https://github.com/Abdul-Muizz1310/slowquery-detective) 0.2 counts every SQL statement against the request's `X-Request-Id`, including the debate's background run that a `POST /debates` starts, and keeps the numbers in this service's own Postgres (schema `slowquery`). `GET /_slowquery/queries?request_id=R` lists what request R caused; it answers bastion-signed tokens only (a frontend token gets 403). See [spec 11](docs/specs/11-query-observability.md).
 
@@ -289,10 +300,10 @@ against a real Postgres.
 
 | Metric | Value |
 |---|---|
-| **Test count** | 459 tests (453 fast, 4 integration, 2 smoke) |
+| **Test count** | 495 tests (489 fast, 4 integration, 2 smoke) |
 | **Line coverage** | **99%** |
 | **Methodology** | Red-first TDD — failing test lands in git before implementation |
-| **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / LangFuse / Postgres calls. Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
+| **External I/O** | Fast tier is hermetic — `respx` (HTTP), in-memory SQLite, dependency-overridden fakes, and a stubbed `/health` DB probe. No real LLM / Tavily / Langfuse / Postgres calls (trace assertions read an in-memory span exporter). Real I/O lives in the `integration` (Testcontainers) and `smoke` (live host) tiers. |
 
 ---
 
@@ -332,7 +343,7 @@ Configure signing by setting `TRANSCRIPT_SIGNING_KEY` (an Ed25519 private key PE
 | 🛡️ **Negative-space programming** | `Literal` types gate sides / verdicts; Pydantic v2 rejects invalid shapes at the HTTP boundary; convergence logic expressed as `is_converged(state)`. |
 | 🏗️ **MVC layering** | `routers → services → repositories → models`. No cross-layer reaches. |
 | 🔤 **Typed everything** | `mypy --strict` clean. Pydantic v2 DTOs, TypedDict graph state, typed SQLAlchemy models. |
-| 🌊 **Pure core, imperative shell** | Node bodies are pure functions; LLM/Tavily/DB/LangFuse at edges, wrapped in `span()` context managers. |
+| 🌊 **Pure core, imperative shell** | Node bodies are pure functions; LLM/Tavily/DB/Langfuse at edges, each step inside its own Langfuse observation. |
 | 🎯 **One responsibility per module** | Every file name describes exactly one thing — never "and". |
 
 ---

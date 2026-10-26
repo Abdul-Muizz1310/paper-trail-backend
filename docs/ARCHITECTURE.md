@@ -23,7 +23,7 @@ flowchart LR
     Client -->|GET /debates/:id/stream| API
     API -->|SSE frames, polled from the row| DB
 
-    Graph -.->|traces| LF[LangFuse]
+    Graph -.->|traces| LF[Langfuse]
     Graph -.->|LLM calls| OR[OpenRouter]
 ```
 
@@ -57,7 +57,7 @@ of this file were not:
 | `core/config.py` | `Settings` | pydantic-settings env loading | Everything above |
 | `core/db.py` | `make_engine()`, `session_scope()` | Async SQLAlchemy engine + short-lived session scope | Everything above |
 | `core/llm.py` | `chat()`, `chat_json()` | OpenRouter client, primary→fast→fallback cascade, jittered backoff on 429 | Everything above |
-| `core/langfuse.py` | `span()`, `trace()`, `update_current_*` | LangFuse/OTel tracing wrapper; degrades to a no-op on any error | Everything above |
+| `core/tracing.py` | `client()`, `debate_trace()`, `usage_details()`, `cost_details()`, `shutdown()` | Langfuse v4 / Python SDK v5: the client from settings, the `run-debate` root with its trace attributes, OpenRouter usage as Langfuse buckets; a no-op without keys | Everything above |
 | `core/prompts.py` | `load()` | Reads `agents/prompts/*.md` | Everything above |
 | `core/rate_limit.py` | `bucket_key()`, `client_identifier()`, `enforce_rate_limit()`, `rate_limiter()` | Upstash fixed-window per-caller throttle (fail-open); bucket `bastion:{sub}`, `paper-trail-frontend:{address}`, or the address | Everything above |
 | `core/signing.py` | `sign_transcript()`, `public_key_pem()`, `verify_transcript_signature()` | Ed25519 receipt signatures | Everything above |
@@ -118,7 +118,7 @@ flowchart TD
 
     subgraph Shared ["Shared"]
         Schemas["schemas/<br/>debates.py DTOs"]
-        Core["core/<br/>config, db, llm, langfuse, prompts,<br/>rate_limit, signing, errors"]
+        Core["core/<br/>config, db, llm, tracing, prompts,<br/>rate_limit, signing, errors"]
     end
 
     Routers --> Services
@@ -205,8 +205,9 @@ If the 120s `STREAM_MAX_SECONDS` budget expires first, the loop closes with
 - **LLM cascade**: `core/llm.py` tries `OPENROUTER_MODEL_PRIMARY` and falls back
   on 429/5xx with jittered backoff. JSON mode is enforced for the plan and judge
   nodes to guarantee parseable output.
-- **Fail-safe tracing**: LangFuse wraps every node; tracing failures are caught
-  and logged, never failing the request.
+- **Tracing that cannot change the outcome**: every node, tool and model attempt
+  is a Langfuse observation; export runs in the SDK's background batches and is
+  flushed on shutdown, so an unreachable Langfuse never fails or slows a debate.
 - **Not implemented**: there is no evidence/search cache. Every debate re-queries
   Tavily even for a claim it has seen before. Upstash *is* provisioned, but
   `core/rate_limit.py` is its only consumer — see the "cache Tavily results"
@@ -216,27 +217,26 @@ If the 120s `STREAM_MAX_SECONDS` budget expires first, the loop closes with
 
 ```mermaid
 flowchart TD
-    Trace["debate.run<br/>(1 trace per debate,<br/>session_id=debate_id)"] --> PlanSpan["node.plan"]
-    Trace --> ProSpan["node.proponent"]
-    Trace --> SkepSpan["node.skeptic"]
-    Trace --> JudgeSpan["node.judge"]
-    Trace --> RenderSpan["node.render"]
+    Trace["run-debate · agent<br/>(1 trace per debate;<br/>session = X-Request-Id)"] --> PlanSpan["plan-debate · agent"]
+    Trace --> ProSpan["argue-for · agent"]
+    Trace --> SkepSpan["argue-against · agent"]
+    Trace --> JudgeSpan["judge-round · agent"]
+    Trace --> RenderSpan["render-transcript · chain"]
 
-    PlanSpan --> ToolSpan1["tool.search × N<br/>(one per search query)"]
-    PlanSpan --> LLMSpan0["llm.json"]
+    PlanSpan --> LLMSpan0["decompose-claim · generation"]
+    PlanSpan --> ToolSpan1["search-web · tool × N"]
+    PlanSpan --> ToolSpan2["fetch-article · tool × N"]
 
-    ProSpan --> LLMSpan1["llm.chat"]
-    SkepSpan --> LLMSpan2["llm.chat"]
-    JudgeSpan --> LLMSpan3["llm.json"]
+    ProSpan --> LLMSpan1["write-argument · generation"]
+    SkepSpan --> LLMSpan2["write-argument · generation"]
+    JudgeSpan --> LLMSpan3["score-round · generation"]
 ```
 
-Span names are exactly those emitted by `core/langfuse.span()` calls in the node
-and tool modules. `tool.search` hangs off `node.plan` because plan is the only
-node that searches; `agents/tools/fetch.py` is instrumented through its caller's
-span rather than its own, and `render` makes no LLM call at all.
-
-Each trace captures: model used, token counts, latency, tool inputs/outputs, and
-the state diff produced by every node. Per-query search failures surface as
-`failed_query_count` / `failed_queries` on the `node.plan` span instead of being
-swallowed. Traces are queryable in the LangFuse dashboard for debugging slow
-rounds or hallucinated evidence.
+The names are a contract ([spec 12](specs/12-tracing.md)): evaluators, dashboards and saved
+filters target them, so they are stable and verb-first, and run-specific values (the debate id,
+the cascade tier and attempt) live in metadata. Every HTTP attempt of the LLM cascade is its own
+generation, with the model it asked, the messages and reply, token usage as exclusive buckets and
+OpenRouter's cost; a failed attempt is level `ERROR`. Tags (`paper-trail`, `entry:*`), `debate_id`
+metadata, the environment (`APP_ENV`) and the session (the request's `X-Request-Id`) are on every
+observation. A failed search or fetch is an `ERROR` tool and makes `plan-debate` a `WARNING`;
+`render` makes no model call.
