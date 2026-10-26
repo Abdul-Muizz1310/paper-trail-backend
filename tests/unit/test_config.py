@@ -27,8 +27,8 @@ def test_demo_mode_defaults_false() -> None:
 
 _FREE_DEFAULTS = {
     "openrouter_model_primary": "google/gemma-4-26b-a4b-it:free",
-    "openrouter_model_fast": "minimax/minimax-m3.1-flash:free",
-    "openrouter_model_fallback": "minimax/minimax-m3.1-flash:free",
+    "openrouter_model_fast": "xingchen-agi/xing4.0-29b-a4b:free",
+    "openrouter_model_fallback": "dots-studio/dots-3-note-preview:free",
 }
 
 

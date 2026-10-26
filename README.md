@@ -180,7 +180,7 @@ src/paper_trail/
 | **Agents** | LangGraph (async cyclic StateGraph, parallel branches) |
 | **DB** | Neon Postgres (async SQLAlchemy + asyncpg). One `debates` table; rounds/evidence are JSON columns |
 | **Migrations** | Alembic, applied by `docker-entrypoint.sh` on every container boot (Render's free plan never runs a `preDeployCommand`) |
-| **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast and fallback `minimax/minimax-m3.1-flash:free` (code defaults; `OPENROUTER_MODEL_*` override). Cascade PRIMARY → FAST → FALLBACK, each model once; 429 / 5xx / timeouts retried with jittered backoff before moving on; one node's LLM work bounded at 120 s |
+| **LLM** | OpenRouter free models — primary `google/gemma-4-26b-a4b-it:free`, fast `xingchen-agi/xing4.0-29b-a4b:free`, fallback `dots-studio/dots-3-note-preview:free`, on three upstream providers (code defaults; `OPENROUTER_MODEL_*` override). Cascade PRIMARY → FAST → FALLBACK, each model once; 429 / 5xx / timeouts retried with jittered backoff before moving on; one node's LLM work bounded at 120 s |
 | **Search** | Tavily (5 results per sub-question) |
 | **Observability** | Langfuse v4 through Python SDK v5 (OpenTelemetry under the hood) — one trace per debate; a no-op without keys |
 | **Cache / Queue** | Upstash Redis — used for rate limiting only. There is **no** evidence/search cache yet |

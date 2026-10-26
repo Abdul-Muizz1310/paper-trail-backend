@@ -27,13 +27,14 @@ class Settings(BaseSettings):
     # OpenRouter
     openrouter_api_key: str = "test-key"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    # Free (`:free`) slugs only, verified live 2026-10-20; the OPENROUTER_MODEL_*
-    # env vars override them (docs/specs/04-llm-router.md "Default slugs").
+    # Free (`:free`) slugs only, each smoke-tested live with JSON mode; the
+    # OPENROUTER_MODEL_* env vars override them (docs/specs/04-llm-router.md
+    # "Default slugs"). Three upstream providers, so one outage cannot empty the
+    # cascade: minimax-m3.1-flash left OpenRouter on 2026-10-26, gemma-4-31b
+    # answered 502 on 2026-10-21 and again on 2026-10-26.
     openrouter_model_primary: str = "google/gemma-4-26b-a4b-it:free"
-    openrouter_model_fast: str = "minimax/minimax-m3.1-flash:free"
-    # gemma-4-31b answered 502 live on 2026-10-21; the cascade calls a model once,
-    # so sharing the fast slug costs nothing.
-    openrouter_model_fallback: str = "minimax/minimax-m3.1-flash:free"
+    openrouter_model_fast: str = "xingchen-agi/xing4.0-29b-a4b:free"
+    openrouter_model_fallback: str = "dots-studio/dots-3-note-preview:free"
     openrouter_http_referer: str = "https://github.com/Abdul-Muizz1310"
     openrouter_x_title: str = "muizz-lab-portfolio"
     openrouter_timeout_s: float = 60.0
