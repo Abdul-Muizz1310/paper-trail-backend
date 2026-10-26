@@ -100,7 +100,7 @@ async def _run_debate_background(debate_id: UUID) -> None:
     from paper_trail.core.db import session_scope
 
     svc = DebateService(session_factory=session_scope)
-    await svc.run(debate_id)
+    await svc.run(debate_id, entry="api")
 
 
 @router.get("", response_model=DebateListOut)

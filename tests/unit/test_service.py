@@ -121,7 +121,7 @@ async def test_create_and_run(monkeypatch) -> None:  # type: ignore[no-untyped-d
 
     debate_id = await svc.create("the sky is blue", 3)
     assert debate_id in repo.store
-    result = await svc.run(debate_id)
+    result = await svc.run(debate_id, entry="api")
     assert result.verdict == "TRUE"
     assert result.confidence == 0.9
     assert result.status == "done"
@@ -143,7 +143,7 @@ async def test_run_unknown_raises() -> None:
     repo = FakeRepo()
     svc = DebateService(repo)
     with pytest.raises(ValueError):
-        await svc.run(uuid4())
+        await svc.run(uuid4(), entry="api")
 
 
 async def test_run_skips_non_dict_graph_updates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -167,7 +167,7 @@ async def test_run_skips_non_dict_graph_updates(monkeypatch) -> None:  # type: i
 
     monkeypatch.setattr(graph_mod, "build_graph", lambda: MixedGraph())
     did = await svc.create("sky is blue", 3)
-    result = await svc.run(did)
+    result = await svc.run(did, entry="api")
     assert result.verdict == "TRUE"
     assert result.status == "done"
 
@@ -238,7 +238,7 @@ async def test_run_persists_rounds_struct_and_hash(monkeypatch) -> None:  # type
 
     monkeypatch.setattr(graph_mod, "build_graph", lambda: FakeGraph())
     did = await svc.create("claim", 3)
-    result = await svc.run(did)
+    result = await svc.run(did, entry="api")
     assert result is not None
     assert result.rounds_struct is not None
     assert len(result.rounds_struct) == 1
@@ -269,7 +269,7 @@ async def test_run_seeds_pool_into_initial_state(monkeypatch) -> None:  # type: 
     from paper_trail.agents import graph as graph_mod
 
     monkeypatch.setattr(graph_mod, "build_graph", lambda: PoolAwareGraph())
-    await svc.run(did)
+    await svc.run(did, entry="api")
     assert captured_state["seen"]["evidence_pool"] == pool
 
 
@@ -287,7 +287,7 @@ async def test_run_graph_error_sets_error_status(monkeypatch) -> None:  # type: 
     monkeypatch.setattr(graph_mod, "build_graph", lambda: BrokenGraph())
     did = await svc.create("c", 3)
     with pytest.raises(RuntimeError):
-        await svc.run(did)
+        await svc.run(did, entry="api")
     assert repo.store[did].status == "error"
 
 
@@ -322,5 +322,5 @@ async def test_run_exceeding_deadline_marks_error(monkeypatch) -> None:  # type:
     monkeypatch.setattr(graph_mod, "build_graph", lambda: HangingGraph())
     did = await svc.create("c", 3)
     with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-        await svc.run(did)
+        await svc.run(did, entry="api")
     assert repo.store[did].status == "error"

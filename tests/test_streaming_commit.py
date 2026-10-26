@@ -71,7 +71,7 @@ async def test_rounds_visible_across_sessions_before_run_finishes(
 
     monkeypatch.setattr(graph_mod, "build_graph", lambda: GatedGraph())
 
-    run_task = asyncio.create_task(writer.run(debate_id))
+    run_task = asyncio.create_task(writer.run(debate_id, entry="api"))
     try:
         seen = None
         for _ in range(500):

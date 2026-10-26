@@ -25,8 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from paper_trail.agents import graph as graph_mod
 from paper_trail.agents.state import initial_state
+from paper_trail.core import tracing
 from paper_trail.core.config import settings
-from paper_trail.core.langfuse import span, update_current_trace
 from paper_trail.models.debate import Debate, DebateStatus
 from paper_trail.repositories.debates import DebateRepo
 
@@ -80,40 +80,22 @@ class DebateService:
             debate = await repo.create(claim, max_rounds, evidence_pool=evidence_pool)
             return debate.id
 
-    async def run(self, debate_id: UUID) -> Debate | None:
+    async def run(self, debate_id: UUID, *, entry: tracing.Entry) -> Debate | None:
+        """Run the debate graph, persisting as it goes; one Langfuse trace per run.
+
+        ``entry`` is what started the debate (spec 12): the trace is tagged with it.
+        """
         async with self._scope() as repo:
             debate = await repo.get(debate_id)
         if debate is None:
             raise ValueError(f"debate {debate_id} not found")
 
-        trace_input = {
-            "debate_id": str(debate_id),
-            "claim": debate.claim,
-            "max_rounds": debate.max_rounds,
-        }
-        trace_metadata = {
-            "debate_id": str(debate_id),
-            "model_primary": settings.openrouter_model_primary,
-            "model_fast": settings.openrouter_model_fast,
-            "model_fallback": settings.openrouter_model_fallback,
-            "max_rounds": debate.max_rounds,
-            "claim_length": len(debate.claim or ""),
-        }
-        tags = [
-            "paper-trail",
-            f"env:{settings.app_env}",
-            "service:paper_trail",
-            f"model_primary:{settings.openrouter_model_primary}",
-        ]
-
-        async with span("debate.run", input=trace_input, metadata=trace_metadata):
-            update_current_trace(
-                name="debate.run",
-                input=trace_input,
-                tags=tags,
-                metadata=trace_metadata,
-                session_id=str(debate_id),
-            )
+        with tracing.debate_trace(
+            debate_id=debate_id,
+            claim=debate.claim,
+            max_rounds=debate.max_rounds,
+            entry=entry,
+        ) as trace_root:
             async with self._scope() as repo:
                 await repo.set_status(debate_id, DebateStatus.running)
             # Block 6 (Spec 08): seed the caller-supplied pool into graph
@@ -184,13 +166,11 @@ class DebateService:
                                         verdict=result.get("verdict"),
                                         confidence=result.get("confidence"),
                                     )
-            except Exception as exc:
+            except Exception:
+                # The exception leaves ``run-debate`` through its context manager,
+                # which records it: the trace is ERROR with the message.
                 async with self._scope() as repo:
                     await repo.set_status(debate_id, DebateStatus.error)
-                update_current_trace(
-                    output={"error": f"{type(exc).__name__}: {exc}"},
-                    tags=[*tags, "status:error"],
-                )
                 raise
 
             verdict = result.get("verdict") or "INCONCLUSIVE"
@@ -216,15 +196,8 @@ class DebateService:
                     rounds_struct=rounds_struct,
                     transcript_hash=transcript_hash,
                 )
-            update_current_trace(
-                output={
-                    "verdict": verdict,
-                    "confidence": confidence,
-                    "rounds_run": len(rounds),
-                    "transcript_length": len(transcript),
-                },
-                tags=[*tags, f"verdict:{verdict}", "status:done"],
-                metadata={**trace_metadata, "final_round": result.get("round", 0)},
+            trace_root.update(
+                output={"verdict": verdict, "confidence": confidence, "rounds_run": len(rounds)}
             )
 
         async with self._scope() as repo:

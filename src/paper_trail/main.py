@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from paper_trail.api.routers.debates import router as debates_router
 from paper_trail.api.routers.platform import router as platform_router
+from paper_trail.core import tracing
 from paper_trail.core.config import settings
 from paper_trail.core.db import make_engine
 from paper_trail.platform.health import install_health_routes
@@ -20,13 +24,22 @@ from paper_trail.platform.query_observability import install_query_observability
 configure_logging()
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """On shutdown, flush the traces still buffered (docs/specs/12-tracing.md)."""
+    try:
+        yield
+    finally:
+        tracing.shutdown()
+
+
 def create_app() -> FastAPI:
     """Assemble the app. Starlette runs the middleware added last outermost, so
     the token check goes in first: CORS and request ids wrap it, a preflight
     never reaches it, and its 401/503 answers still carry CORS headers
     (docs/specs/10-platform-contract-v2.md §6). slowquery-detective goes last
     of all, so its request-id tagger wraps everything (spec 11)."""
-    app = FastAPI(title="paper_trail", version="0.1.0")
+    app = FastAPI(title="paper_trail", version="0.1.0", lifespan=_lifespan)
     install_platform_token(app)
     install_health_routes(app)
     install_metrics(app)

@@ -6,7 +6,7 @@ from typing import Any
 
 from paper_trail.agents.state import DebateState
 from paper_trail.agents.tools.transcript import hash_transcript
-from paper_trail.core.langfuse import span, update_current_span
+from paper_trail.core import tracing
 
 
 def _build_rounds_struct(
@@ -62,10 +62,11 @@ async def render(state: DebateState) -> dict[str, Any]:
     reasoning = (state.get("reasoning") or "").strip()
     rounds = state.get("rounds") or []
 
-    async with span(
-        "node.render",
+    with tracing.client().start_as_current_observation(
+        as_type="chain",
+        name="render-transcript",
         input={"claim": claim, "rounds_count": len(rounds), "verdict": verdict},
-    ):
+    ) as observation:
         lines: list[str] = []
         lines.append(f"# Debate: {claim}")
         lines.append("")
@@ -112,11 +113,9 @@ async def render(state: DebateState) -> dict[str, Any]:
             confidence=hash_confidence,
             rounds=rounds_struct,
         )
-        update_current_span(
+        observation.update(
             output={
                 "transcript_length": len(transcript),
-                "verdict": verdict,
-                "confidence": confidence,
                 "rounds_struct_count": len(rounds_struct),
                 "transcript_hash": transcript_hash,
             }

@@ -11,7 +11,7 @@ from paper_trail.agents.nodes._format import (
     format_prior_rounds,
 )
 from paper_trail.agents.state import DebateState
-from paper_trail.core.langfuse import span, update_current_span
+from paper_trail.core import tracing
 from paper_trail.core.llm import chat
 from paper_trail.core.prompts import load
 
@@ -25,15 +25,16 @@ async def proponent(state: DebateState) -> dict[str, Any]:
     sub_questions = plan.get("sub_questions", []) if isinstance(plan, dict) else []
     pool = state.get("evidence_pool") or []
 
-    async with span(
-        "node.proponent",
+    with tracing.client().start_as_current_observation(
+        as_type="agent",
+        name="argue-for",
         input={
             "claim": claim,
             "round": rnum,
             "evidence_count": len(evidence),
             "pool_size": len(pool),
         },
-    ):
+    ) as observation:
         system = load("proponent")
         user_parts = [
             f"## Claim\n{claim}",
@@ -72,7 +73,8 @@ async def proponent(state: DebateState) -> dict[str, Any]:
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
-            ]
+            ],
+            name="write-argument",
         )
         citations = build_round_citations(argument, pool=pool, evidence=evidence)
         entry: dict[str, Any] = {
@@ -82,7 +84,7 @@ async def proponent(state: DebateState) -> dict[str, Any]:
             "evidence": list(evidence),
             "citations": citations,
         }
-        update_current_span(
+        observation.update(
             output={
                 "round": rnum,
                 "argument_length": len(argument),

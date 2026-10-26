@@ -42,6 +42,7 @@ class FakePlatformService:
     def __init__(self) -> None:
         self.store: dict[UUID, FakePlatformDebate] = {}
         self.create_called_with: list[tuple[str, int]] = []
+        self.run_entries: list[str] = []
 
     async def create(self, claim: str, max_rounds: int) -> UUID:
         self.create_called_with.append((claim, max_rounds))
@@ -49,7 +50,8 @@ class FakePlatformService:
         self.store[d.id] = d
         return d.id
 
-    async def run(self, debate_id: UUID) -> Any:
+    async def run(self, debate_id: UUID, *, entry: str) -> Any:
+        self.run_entries.append(entry)
         return self.store[debate_id]
 
     async def get(self, debate_id: UUID) -> Any:
@@ -144,6 +146,8 @@ async def test_platform_happy(fake_service, monkeypatch, bastion_auth) -> None:
     assert body["verdict"] == "TRUE"
     assert isinstance(body["rounds_run"], int)
     assert body["transcript_url"].endswith("/transcript.md")
+    # Spec 12: a bastion debate's trace is tagged entry:platform.
+    assert fake_service.run_entries == ["platform"]
 
 
 async def test_platform_missing_auth_header_401(fake_service, monkeypatch, keys) -> None:
