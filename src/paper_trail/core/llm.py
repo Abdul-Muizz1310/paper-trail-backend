@@ -25,7 +25,7 @@ from typing import Annotated, Any, Literal, TypedDict
 import httpx
 from langfuse import LangfuseGeneration
 from langfuse.api import MapValue
-from pydantic import BaseModel, BeforeValidator, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, ValidationError
 
 from paper_trail.core import tracing
 from paper_trail.core.config import settings
@@ -148,20 +148,45 @@ class _Choice(BaseModel):
     message: _Message
 
 
+class _ReplyError(BaseModel):
+    """OpenRouter's error object, which can come back inside a 200 instead of a completion."""
+
+    code: Count = None
+    message: Text = None
+
+
 class _Reply(BaseModel):
     """The part of an OpenRouter chat completion the router reads."""
 
     provider: Text = None
-    choices: list[_Choice] = Field(min_length=1)
+    choices: list[_Choice] = []
     usage: Annotated[_Usage | None, BeforeValidator(_mapping_or_none)] = None
+    error: Annotated[_ReplyError | None, BeforeValidator(_mapping_or_none)] = None
+
+
+def _status_stage(code: int) -> str:
+    if code == 429:
+        return "rate_limited"
+    return "server_error" if code >= 500 else "client_error"
 
 
 def _read_reply(resp: httpx.Response) -> _Reply:
-    """Parse a 200; one without a completion is ``bad_response`` (spec 04, rule 3)."""
+    """Parse a 200; one without a completion is ``bad_response`` (spec 04, rule 3).
+
+    A 200 carrying OpenRouter's error object is that error, filed by its code like a
+    status (spec 04 C12): a 429 or a 5xx is retried on the tier, anything else moves on.
+    """
     try:
         reply = _Reply.model_validate(resp.json())
     except (ValueError, ValidationError) as e:
         raise LLMError("bad_response", str(e)) from e
+    if reply.error is not None:
+        code, message = reply.error.code, reply.error.message or ""
+        if code is None:
+            raise LLMError("upstream_error", f"in the reply body: {message}")
+        raise LLMError(_status_stage(code), f"status={code} in the reply body: {message}")
+    if not reply.choices:
+        raise LLMError("bad_response", "no choices")
     content = reply.choices[0].message.content
     if content is None or not content.strip():
         raise LLMError("bad_response", "no completion")
