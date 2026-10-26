@@ -399,6 +399,21 @@ async def test_t8_a_200_without_a_completion_asks_the_next_tier(
 
 
 @respx.mock
+async def test_t8_an_error_inside_a_200_is_filed_by_its_code(traces: Traces) -> None:
+    limited = {"error": {"code": 429, "message": "Rate limit exceeded: free-models-per-day"}}
+    respx.post(_chat_url()).mock(
+        side_effect=[httpx.Response(200, json=limited), httpx.Response(200, json=_reply("ok"))]
+    )
+    assert await llm_mod.chat(MESSAGES, name="write-argument") == "ok"
+    first, second = traces.named("write-argument")
+    assert traces.level(first) == "ERROR"
+    assert traces.status_message(first) == (
+        "rate_limited: status=429 in the reply body: Rate limit exceeded: free-models-per-day"
+    )
+    assert traces.metadata(second) == {"tier": "primary", "attempt": 2}
+
+
+@respx.mock
 async def test_t8_a_200_that_is_not_json_asks_the_next_tier(traces: Traces) -> None:
     respx.post(_chat_url()).mock(
         side_effect=[httpx.Response(200, text="<html>"), httpx.Response(200, json=_reply("ok"))]

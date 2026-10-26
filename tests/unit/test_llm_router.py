@@ -434,6 +434,52 @@ async def test_c4_a_transient_504_is_retried_on_the_same_tier_first(
     assert len(_no_sleep) == 1
 
 
+def _error_in_200(code: int | None, message: str = "Rate limit exceeded") -> httpx.Response:
+    error: dict[str, object] = {"message": message}
+    if code is not None:
+        error["code"] = code
+    return httpx.Response(200, json={"error": error})
+
+
+@respx.mock
+async def test_c12_a_429_inside_a_200_is_retried_on_the_same_tier(
+    _no_sleep: list[float],
+) -> None:
+    models, handler = _by_model({"p/primary:free": [_error_in_200(429), _ok("primary again")]})
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument")
+        == "primary again"
+    )
+    assert models == ["p/primary:free", "p/primary:free"]
+    assert len(_no_sleep) == 1
+
+
+@respx.mock
+async def test_c12_a_400_inside_a_200_moves_on_without_a_retry(_no_sleep: list[float]) -> None:
+    models, handler = _by_model(
+        {"p/primary:free": _error_in_200(400, "Bad request"), "f/fast:free": _ok("from fast")}
+    )
+    respx.post(_chat_url()).mock(side_effect=handler)
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument") == "from fast"
+    )
+    assert models == ["p/primary:free", "f/fast:free"]
+
+
+@respx.mock
+async def test_c12_an_error_without_a_code_moves_on_as_upstream_error(
+    _no_sleep: list[float],
+) -> None:
+    respx.post(_chat_url()).mock(return_value=_error_in_200(None, "Provider returned error"))
+    with pytest.raises(LLMError) as exc:
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument")
+    assert exc.value.stage == "all_models_exhausted"
+    assert (
+        exc.value.detail == "primary=upstream_error; fast=upstream_error; fallback=upstream_error"
+    )
+
+
 @respx.mock
 async def test_c5_a_400_moves_on_without_a_retry(_no_sleep: list[float]) -> None:
     models, handler = _by_model(
