@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+import re
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_LANGFUSE_ENVIRONMENT = re.compile(r"[a-z0-9_-]{1,40}")
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Also the Langfuse environment of every trace (docs/specs/12-tracing.md); see
+    # `_langfuse_environment`.
     app_env: str = "development"
     log_level: str = "info"
     port: int = 8000
@@ -21,13 +27,14 @@ class Settings(BaseSettings):
     # OpenRouter
     openrouter_api_key: str = "test-key"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    # Free (`:free`) slugs only, verified live 2026-10-20; the OPENROUTER_MODEL_*
-    # env vars override them (docs/specs/04-llm-router.md "Default slugs").
+    # Free (`:free`) slugs only, each smoke-tested live with JSON mode; the
+    # OPENROUTER_MODEL_* env vars override them (docs/specs/04-llm-router.md
+    # "Default slugs"). Three upstream providers, so one outage cannot empty the
+    # cascade: minimax-m3.1-flash left OpenRouter on 2026-10-26, gemma-4-31b
+    # answered 502 on 2026-10-21 and again on 2026-10-26.
     openrouter_model_primary: str = "google/gemma-4-26b-a4b-it:free"
-    openrouter_model_fast: str = "minimax/minimax-m3.1-flash:free"
-    # gemma-4-31b answered 502 live on 2026-10-21; the cascade calls a model once,
-    # so sharing the fast slug costs nothing.
-    openrouter_model_fallback: str = "minimax/minimax-m3.1-flash:free"
+    openrouter_model_fast: str = "xingchen-agi/xing4.0-29b-a4b:free"
+    openrouter_model_fallback: str = "dots-studio/dots-3-note-preview:free"
     openrouter_http_referer: str = "https://github.com/Abdul-Muizz1310"
     openrouter_x_title: str = "muizz-lab-portfolio"
     openrouter_timeout_s: float = 60.0
@@ -78,6 +85,17 @@ class Settings(BaseSettings):
     # worst-case time one debate can pin a background worker under upstream
     # rate-limit storms.
     debate_deadline_s: float = 300.0
+
+    @field_validator("app_env")
+    @classmethod
+    def _langfuse_environment(cls, value: str) -> str:
+        """Refuse at startup an APP_ENV Langfuse would drop from every trace."""
+        if _LANGFUSE_ENVIRONMENT.fullmatch(value) is None or value.startswith("langfuse"):
+            raise ValueError(
+                "APP_ENV is also the Langfuse environment: 1-40 of a-z, 0-9, '_' and '-', "
+                "not starting with 'langfuse'"
+            )
+        return value
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import httpx
 import trafilatura
 
+from paper_trail.core import tracing
 from paper_trail.core.errors import ToolError
 
 
@@ -17,7 +18,20 @@ class FetchedDoc:
 
 
 async def fetch(url: str) -> FetchedDoc:
-    """Fetch a URL and extract main-content text via trafilatura."""
+    """Fetch a URL and extract main-content text via trafilatura (the ``fetch-article`` tool)."""
+    with tracing.client().start_as_current_observation(
+        as_type="tool", name="fetch-article", input={"url": url}
+    ) as observation:
+        try:
+            doc = await _fetch(url)
+        except ToolError as e:
+            observation.update(level="ERROR", status_message=str(e))
+            raise
+        observation.update(output={"char_count": len(doc.text)})
+        return doc
+
+
+async def _fetch(url: str) -> FetchedDoc:
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.get(url)

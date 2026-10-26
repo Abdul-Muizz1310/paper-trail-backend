@@ -31,7 +31,7 @@ def _resp(content: str) -> dict:
 @respx.mock
 async def test_chat_happy_path() -> None:
     route = respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp("hi")))
-    out = await llm_mod.chat([{"role": "user", "content": "hello"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hello"}], name="write-argument")
     assert out == "hi"
     assert route.called
     req = route.calls.last.request
@@ -50,7 +50,7 @@ async def test_chat_primary_429_falls_back() -> None:
         return httpx.Response(200, json=_resp("fallback-content"))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    out = await llm_mod.chat([{"role": "user", "content": "hi"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert out == "fallback-content"
     assert calls["i"] == 2
 
@@ -66,7 +66,7 @@ async def test_chat_primary_500_falls_back() -> None:
         return httpx.Response(200, json=_resp("ok"))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    out = await llm_mod.chat([{"role": "user", "content": "hi"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert out == "ok"
 
 
@@ -74,7 +74,7 @@ async def test_chat_primary_500_falls_back() -> None:
 async def test_chat_all_fail_raises() -> None:
     respx.post(_chat_url()).mock(return_value=httpx.Response(500))
     with pytest.raises(LLMError):
-        await llm_mod.chat([{"role": "user", "content": "hi"}])
+        await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
 
 
 class _Schema(BaseModel):
@@ -87,7 +87,9 @@ async def test_chat_json_happy_path_validates() -> None:
     route = respx.post(_chat_url()).mock(
         return_value=httpx.Response(200, json=_resp('{"answer": "yes", "score": 7}'))
     )
-    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    result = await llm_mod.chat_json(
+        [{"role": "user", "content": "q"}], _Schema, name="score-round"
+    )
     assert isinstance(result, _Schema)
     assert result.answer == "yes"
     body = route.calls.last.request.content.decode()
@@ -99,14 +101,14 @@ async def test_chat_json_happy_path_validates() -> None:
 async def test_chat_json_invalid_json_raises() -> None:
     respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp("not json at all")))
     with pytest.raises(LLMError):
-        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema, name="score-round")
 
 
 @respx.mock
 async def test_chat_json_schema_mismatch_raises() -> None:
     respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp('{"wrong": "field"}')))
     with pytest.raises(LLMError):
-        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema, name="score-round")
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ async def test_chat_timeout_on_primary_falls_back_to_fallback() -> None:
         return httpx.Response(200, json=_resp("rescued"))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    out = await llm_mod.chat([{"role": "user", "content": "hi"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert out == "rescued"
 
 
@@ -154,7 +156,7 @@ async def test_chat_timeout_on_primary_falls_back_to_fallback() -> None:
 async def test_chat_timeout_on_both_raises_all_models_exhausted() -> None:
     respx.post(_chat_url()).mock(side_effect=httpx.TimeoutException("timed out"))
     with pytest.raises(LLMError) as exc_info:
-        await llm_mod.chat([{"role": "user", "content": "hi"}])
+        await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert exc_info.value.stage == "all_models_exhausted"
 
 
@@ -169,7 +171,7 @@ async def test_chat_http_error_falls_back() -> None:
         return httpx.Response(200, json=_resp("fallback-rescued"))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    out = await llm_mod.chat([{"role": "user", "content": "hi"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert out == "fallback-rescued"
 
 
@@ -184,7 +186,7 @@ async def test_chat_400_client_error_falls_back() -> None:
         return httpx.Response(200, json=_resp("ok"))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    out = await llm_mod.chat([{"role": "user", "content": "hi"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert out == "ok"
 
 
@@ -193,7 +195,7 @@ async def test_chat_bad_response_shape_raises() -> None:
     """Well-formed 200 but missing the expected choices/message/content path."""
     respx.post(_chat_url()).mock(return_value=httpx.Response(200, json={"nope": True}))
     with pytest.raises(LLMError) as exc_info:
-        await llm_mod.chat([{"role": "user", "content": "hi"}])
+        await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     # Both primary + fallback raise bad_response → exhausted
     assert exc_info.value.stage == "all_models_exhausted"
 
@@ -203,7 +205,7 @@ async def test_chat_rate_limit_exhausts_retries(_no_sleep) -> None:  # type: ign
     """All 5 retries return 429 → raises rate_limited from the retry loop."""
     respx.post(_chat_url()).mock(return_value=httpx.Response(429, json={"error": "rate"}))
     with pytest.raises(LLMError) as exc_info:
-        await llm_mod.chat([{"role": "user", "content": "hi"}])
+        await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     # After exhausting primary retries AND fallback retries → exhausted wrapper
     assert exc_info.value.stage == "all_models_exhausted"
 
@@ -219,7 +221,9 @@ async def test_chat_json_falls_back_when_primary_raises() -> None:
         return httpx.Response(200, json=_resp('{"answer": "yes", "score": 1}'))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    result = await llm_mod.chat_json(
+        [{"role": "user", "content": "q"}], _Schema, name="score-round"
+    )
     assert result.answer == "yes"
     assert result.score == 1
     assert calls["i"] == 2
@@ -236,7 +240,7 @@ async def test_a_429_is_retried_on_the_same_tier_then_succeeds(_no_sleep) -> Non
         return httpx.Response(200, json=_resp("success-after-retry"))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    out = await llm_mod.chat([{"role": "user", "content": "hi"}])
+    out = await llm_mod.chat([{"role": "user", "content": "hi"}], name="write-argument")
     assert out == "success-after-retry"
     assert calls["i"] == 3
 
@@ -244,7 +248,9 @@ async def test_a_429_is_retried_on_the_same_tier_then_succeeds(_no_sleep) -> Non
 @respx.mock
 async def test_chat_uses_fast_tier_when_requested() -> None:
     respx.post(_chat_url()).mock(return_value=httpx.Response(200, json=_resp("fast-tier")))
-    out = await llm_mod.chat([{"role": "user", "content": "q"}], model="fast")
+    out = await llm_mod.chat(
+        [{"role": "user", "content": "q"}], name="write-argument", model="fast"
+    )
     assert out == "fast-tier"
 
 
@@ -293,7 +299,9 @@ async def test_j1_chat_json_unwraps_the_live_plan_reply_without_a_fallback() -> 
     route = respx.post(_chat_url()).mock(
         return_value=httpx.Response(200, json=_resp(f"[{_PLAN_LIKE}]"))
     )
-    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    result = await llm_mod.chat_json(
+        [{"role": "user", "content": "q"}], _Schema, name="score-round"
+    )
     assert result == _Schema(answer="yes", score=3)
     assert route.call_count == 1
 
@@ -315,7 +323,9 @@ async def test_j3_unusable_primary_reply_asks_the_fallback_once(bad_primary: str
         return httpx.Response(200, json=_resp(reply))
 
     respx.post(_chat_url()).mock(side_effect=handler)
-    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    result = await llm_mod.chat_json(
+        [{"role": "user", "content": "q"}], _Schema, name="score-round"
+    )
     assert result == _Schema(answer="yes", score=3)
     assert models == [settings.openrouter_model_primary, settings.openrouter_model_fast]
 
@@ -333,7 +343,7 @@ async def test_j4_every_reply_unusable_exhausts_the_cascade(
         side_effect=lambda _req: httpx.Response(200, json=_resp(next(replies)))
     )
     with pytest.raises(LLMError) as exc:
-        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema, name="score-round")
     assert exc.value.stage == "all_models_exhausted"
     assert exc.value.detail == f"primary=schema_mismatch; fast=invalid_json; fallback={stage}"
     assert route.call_count == 3
@@ -377,7 +387,9 @@ async def test_c1_504_on_every_primary_attempt_cascades_to_the_fast_tier(
         {"p/primary:free": httpx.Response(504), "f/fast:free": _ok("from fast")}
     )
     respx.post(_chat_url()).mock(side_effect=handler)
-    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument") == "from fast"
+    )
     assert models == ["p/primary:free"] * 5 + ["f/fast:free"]
     assert len(_no_sleep) == 4  # backoff between the five primary attempts
 
@@ -390,7 +402,7 @@ async def test_c2_every_tier_5xx_exhausts_after_retrying_each(status: int) -> No
     )
     respx.post(_chat_url()).mock(side_effect=handler)
     with pytest.raises(LLMError) as exc:
-        await llm_mod.chat([{"role": "user", "content": "q"}])
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument")
     assert exc.value.stage == "all_models_exhausted"
     assert exc.value.detail == "primary=server_error; fast=server_error; fallback=server_error"
     assert models == ["p/primary:free"] * 5 + ["f/fast:free"] * 5 + ["b/fallback:free"] * 5
@@ -402,7 +414,9 @@ async def test_c3_a_timeout_counts_as_a_5xx() -> None:
         {"p/primary:free": httpx.ReadTimeout("slow"), "f/fast:free": _ok("from fast")}
     )
     respx.post(_chat_url()).mock(side_effect=handler)
-    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument") == "from fast"
+    )
     assert models == ["p/primary:free"] * 5 + ["f/fast:free"]
 
 
@@ -412,7 +426,10 @@ async def test_c4_a_transient_504_is_retried_on_the_same_tier_first(
 ) -> None:
     models, handler = _by_model({"p/primary:free": [httpx.Response(504), _ok("primary again")]})
     respx.post(_chat_url()).mock(side_effect=handler)
-    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "primary again"
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument")
+        == "primary again"
+    )
     assert models == ["p/primary:free", "p/primary:free"]
     assert len(_no_sleep) == 1
 
@@ -423,7 +440,9 @@ async def test_c5_a_400_moves_on_without_a_retry(_no_sleep: list[float]) -> None
         {"p/primary:free": httpx.Response(400), "f/fast:free": _ok("from fast")}
     )
     respx.post(_chat_url()).mock(side_effect=handler)
-    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument") == "from fast"
+    )
     assert models == ["p/primary:free", "f/fast:free"]
     assert _no_sleep == []
 
@@ -434,7 +453,9 @@ async def test_c6_chat_json_cascades_on_504_too() -> None:
         {"p/primary:free": httpx.Response(504), "f/fast:free": _ok(_PLAN_LIKE)}
     )
     respx.post(_chat_url()).mock(side_effect=handler)
-    result = await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+    result = await llm_mod.chat_json(
+        [{"role": "user", "content": "q"}], _Schema, name="score-round"
+    )
     assert result == _Schema(answer="yes", score=3)
     assert models[-1] == "f/fast:free"
 
@@ -446,7 +467,7 @@ async def test_c7_a_fast_request_cascades_fast_then_primary_then_fallback() -> N
     )
     respx.post(_chat_url()).mock(side_effect=handler)
     with pytest.raises(LLMError) as exc:
-        await llm_mod.chat([{"role": "user", "content": "q"}], model="fast")
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument", model="fast")
     assert exc.value.detail == "fast=server_error; primary=server_error; fallback=server_error"
     assert models == ["f/fast:free"] * 5 + ["p/primary:free"] * 5 + ["b/fallback:free"] * 5
 
@@ -461,7 +482,7 @@ async def test_c8_a_model_two_tiers_share_is_called_as_one_tier(
     )
     respx.post(_chat_url()).mock(side_effect=handler)
     with pytest.raises(LLMError) as exc:
-        await llm_mod.chat([{"role": "user", "content": "q"}])
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument")
     assert exc.value.detail == "primary=server_error; fast=server_error"
     assert models == ["p/primary:free"] * 5 + ["f/fast:free"] * 5
 
@@ -472,7 +493,9 @@ async def test_c9_hanging_tiers_are_cut_at_the_node_deadline(
     monkeypatch.setattr(settings, "llm_node_deadline_s", 0.3)
     called: list[str] = []
 
-    async def _hang(messages: Any, model: str, temperature: float, *, json_mode: bool) -> str:
+    async def _hang(
+        messages: Any, model: str, temperature: float, *, json_mode: bool, **_: Any
+    ) -> str:
         called.append(model)
         await asyncio.sleep(10)
         return "never"
@@ -480,7 +503,7 @@ async def test_c9_hanging_tiers_are_cut_at_the_node_deadline(
     monkeypatch.setattr(llm_mod, "_one_call", _hang)
     started = time.monotonic()
     with pytest.raises(LLMError) as exc:
-        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema)
+        await llm_mod.chat_json([{"role": "user", "content": "q"}], _Schema, name="score-round")
     assert time.monotonic() - started < 1.0
     assert exc.value.stage == "all_models_exhausted"
     assert exc.value.detail == "primary=timeout; fast=timeout; fallback=timeout"
@@ -497,7 +520,9 @@ async def test_c10_a_backoff_that_outlasts_the_tiers_share_is_not_slept(
         {"p/primary:free": httpx.Response(503), "f/fast:free": _ok("from fast")}
     )
     respx.post(_chat_url()).mock(side_effect=handler)
-    assert await llm_mod.chat([{"role": "user", "content": "q"}]) == "from fast"
+    assert (
+        await llm_mod.chat([{"role": "user", "content": "q"}], name="write-argument") == "from fast"
+    )
     assert models == ["p/primary:free", "f/fast:free"]
     assert _no_sleep == []
 
@@ -523,13 +548,23 @@ async def test_c11_a_tier_that_starts_with_no_time_left_makes_no_call(
 ) -> None:
     called: list[str] = []
 
-    async def _never(messages: Any, model: str, temperature: float, *, json_mode: bool) -> str:
+    async def _never(
+        messages: Any, model: str, temperature: float, *, json_mode: bool, **_: Any
+    ) -> str:
         called.append(model)
         return "never"
 
     monkeypatch.setattr(llm_mod, "_one_call", _never)
     already_over = asyncio.get_running_loop().time() - 1.0
     with pytest.raises(LLMError) as exc:
-        await llm_mod._call_tier([], "p/primary:free", 0.2, json_mode=False, until=already_over)
+        await llm_mod._call_tier(
+            [],
+            "p/primary:free",
+            0.2,
+            json_mode=False,
+            name="write-argument",
+            tier="primary",
+            until=already_over,
+        )
     assert exc.value.stage == "timeout"
     assert called == []

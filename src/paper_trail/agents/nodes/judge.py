@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from paper_trail.agents.nodes._format import format_prior_rounds
 from paper_trail.agents.state import CONFIDENCE_THRESHOLD, DebateState
-from paper_trail.core.langfuse import span, update_current_span
+from paper_trail.core import tracing
 from paper_trail.core.llm import chat_json
 from paper_trail.core.prompts import load
 
@@ -33,15 +33,16 @@ async def judge(state: DebateState) -> dict[str, Any]:
     cur_round = int(state.get("round", 0))
     max_rounds = int(state.get("max_rounds", 5))
 
-    async with span(
-        "node.judge",
+    with tracing.client().start_as_current_observation(
+        as_type="agent",
+        name="judge-round",
         input={
             "claim": claim,
             "round_just_completed": cur_round + 1,
             "max_rounds": max_rounds,
             "rounds_accumulated": len(rounds),
         },
-    ):
+    ) as observation:
         system = load("judge")
         rounds_md = format_prior_rounds(rounds) or "_No rounds yet._"
         user = (
@@ -63,17 +64,18 @@ async def judge(state: DebateState) -> dict[str, Any]:
                 {"role": "user", "content": user},
             ],
             Verdict,
+            name="score-round",
         )
         verdict = result.verdict
         confidence = float(result.confidence)
         reasoning = (result.reasoning or "").strip()
         next_round = cur_round + 1
         need_more = confidence < CONFIDENCE_THRESHOLD and next_round < max_rounds
-        update_current_span(
+        observation.update(
             output={
                 "verdict": verdict,
                 "confidence": confidence,
-                "reasoning_length": len(reasoning),
+                "reasoning": reasoning,
                 "need_more": need_more,
                 "next_round": next_round,
             }

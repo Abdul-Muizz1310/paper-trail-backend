@@ -11,8 +11,8 @@ from paper_trail.agents.nodes._format import format_evidence_pool
 from paper_trail.agents.state import DebateState
 from paper_trail.agents.tools.fetch import fetch
 from paper_trail.agents.tools.search import search
+from paper_trail.core import tracing
 from paper_trail.core.config import settings
-from paper_trail.core.langfuse import span, update_current_span
 from paper_trail.core.llm import chat_json
 from paper_trail.core.prompts import load
 
@@ -26,10 +26,11 @@ async def plan(state: DebateState) -> dict[str, Any]:
     """Decompose a claim into sub-questions and seed evidence via search."""
     claim = state.get("claim", "")
     pool = state.get("evidence_pool") or []
-    async with span(
-        "node.plan",
+    with tracing.client().start_as_current_observation(
+        as_type="agent",
+        name="plan-debate",
         input={"claim": claim, "pool_size": len(pool)},
-    ):
+    ) as observation:
         system = load("plan")
         # When the caller provides pre-collected evidence, nudge the planner
         # to prefer it over fresh Tavily searches for its sub-questions.
@@ -53,6 +54,7 @@ async def plan(state: DebateState) -> dict[str, Any]:
                 {"role": "user", "content": user_msg},
             ],
             PlanSchema,
+            name="decompose-claim",
         )
         sub_questions = list(getattr(result, "sub_questions", []) or [])
         search_queries = list(getattr(result, "search_queries", []) or [])
@@ -87,9 +89,9 @@ async def plan(state: DebateState) -> dict[str, Any]:
         # entry intact so the debate still runs.
         fetched_count = 0
         top_n = settings.evidence_fetch_top_n
+        to_fetch: list[dict[str, Any]] = []
         if top_n > 0 and evidence:
             seen_urls: set[str] = set()
-            to_fetch: list[dict[str, Any]] = []
             for item in evidence:
                 url = str(item.get("url") or "")
                 if url and url not in seen_urls:
@@ -121,7 +123,8 @@ async def plan(state: DebateState) -> dict[str, Any]:
             "search_queries": search_queries,
             "evidence": evidence,
         }
-        update_current_span(
+        attempted = len(search_queries) + len(to_fetch)
+        observation.update(
             output={
                 "sub_question_count": len(sub_questions),
                 "search_query_count": len(search_queries),
@@ -132,5 +135,11 @@ async def plan(state: DebateState) -> dict[str, Any]:
                 "search_queries": search_queries,
             },
             metadata={"failed_queries": failed_queries} if failed_queries else None,
+            level="WARNING" if failed_queries else None,
+            status_message=(
+                f"{len(failed_queries)} of {attempted} searches or fetches failed"
+                if failed_queries
+                else None
+            ),
         )
         return {"plan": plan_payload}

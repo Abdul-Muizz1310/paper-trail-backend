@@ -31,8 +31,12 @@ services:
         sync: false
       - key: LANGFUSE_SECRET_KEY
         sync: false
+      # The project is on Langfuse US Cloud (docs/specs/12-tracing.md).
       - key: LANGFUSE_BASE_URL
-        sync: false
+        value: https://us.cloud.langfuse.com
+      # Also the Langfuse environment of every trace.
+      - key: APP_ENV
+        value: production
       # Upstash-backed rate limiting for the paid debate endpoints.
       - key: UPSTASH_REDIS_REST_URL
         sync: false

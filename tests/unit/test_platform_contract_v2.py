@@ -139,7 +139,7 @@ class _FakeService:
         self.created.append((claim, max_rounds))
         return self.debate.id
 
-    async def run(self, debate_id: UUID) -> Any:
+    async def run(self, debate_id: UUID, *, entry: str = "api") -> Any:
         return self.debate
 
     async def get(self, debate_id: UUID) -> Any:

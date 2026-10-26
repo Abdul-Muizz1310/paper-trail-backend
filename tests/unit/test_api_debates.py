@@ -73,7 +73,7 @@ class FakeDebateService:
         self.store[d.id] = d
         return d.id
 
-    async def run(self, debate_id: UUID) -> Any:
+    async def run(self, debate_id: UUID, *, entry: str = "api") -> Any:
         self.run_called_with.append(debate_id)
         d = self.store.get(debate_id)
         if d is not None:

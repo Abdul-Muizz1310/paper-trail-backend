@@ -18,6 +18,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import yaml
 
@@ -151,6 +152,7 @@ async def run_real(
     """
     from paper_trail.agents.graph import build_graph
     from paper_trail.agents.state import initial_state
+    from paper_trail.core import tracing
 
     graph = build_graph()
     results: list[dict[str, Any]] = []
@@ -169,7 +171,19 @@ async def run_real(
         }
         try:
             state = initial_state(claim["claim"], max_rounds=5)
-            final = await graph.ainvoke(state)
+            # One trace per claim, as for a stored debate (docs/specs/12-tracing.md);
+            # nothing is stored here, so a fresh id names the run.
+            with tracing.debate_trace(
+                debate_id=uuid4(), claim=claim["claim"], max_rounds=5, entry="eval"
+            ) as trace_root:
+                final = await graph.ainvoke(state)
+                trace_root.update(
+                    output={
+                        "verdict": final.get("verdict"),
+                        "confidence": final.get("confidence"),
+                        "rounds_run": len(final.get("rounds") or []),
+                    }
+                )
             row["actual_verdict"] = final.get("verdict") or "INCONCLUSIVE"
             row["confidence"] = final.get("confidence")
             row["rounds"] = final.get("round", 0)
@@ -243,7 +257,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover
         results = run_dry(claims)
         mode = "dry-run"
     else:
-        results = asyncio.run(run_real(claims, delay_s=args.delay, retry_errors=not args.no_retry))
+        from paper_trail.core import tracing
+
+        try:
+            results = asyncio.run(
+                run_real(claims, delay_s=args.delay, retry_errors=not args.no_retry)
+            )
+        finally:
+            # A short-lived process: send the buffered traces before it exits.
+            tracing.shutdown()
         mode = "real"
     write_report(results, mode=mode, path=args.report_path)
     metrics = compute_metrics(results)

@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 import httpx
 
+from paper_trail.core import tracing
 from paper_trail.core.config import settings
 from paper_trail.core.errors import ToolError
-from paper_trail.core.langfuse import span, update_current_span
 
 _TAVILY_URL = "https://api.tavily.com/search"
 
@@ -30,16 +30,20 @@ async def search(query: str, k: int = 5) -> list[SearchHit]:
         "query": query,
         "max_results": k,
     }
-    async with span("tool.search", input={"query": query, "k": k}):
+    with tracing.client().start_as_current_observation(
+        as_type="tool", name="search-web", input={"query": query, "k": k}
+    ) as observation:
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(_TAVILY_URL, json=payload)
-        except httpx.HTTPError as e:
-            update_current_span(metadata={"error": "tavily_http_error", "error_detail": str(e)})
-            raise ToolError("tavily_http_error", str(e)) from e
-        if resp.status_code != 200:
-            update_current_span(metadata={"error": "tavily_error", "status_code": resp.status_code})
-            raise ToolError("tavily_error", f"status={resp.status_code}")
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(_TAVILY_URL, json=payload)
+            except httpx.HTTPError as e:
+                raise ToolError("tavily_http_error", str(e)) from e
+            if resp.status_code != 200:
+                raise ToolError("tavily_error", f"status={resp.status_code}")
+        except ToolError as e:
+            observation.update(level="ERROR", status_message=str(e))
+            raise
         data = resp.json()
         results = data.get("results") or []
         hits = [
@@ -51,11 +55,5 @@ async def search(query: str, k: int = 5) -> list[SearchHit]:
             )
             for r in results
         ]
-        update_current_span(
-            output={
-                "hit_count": len(hits),
-                "titles": [h.title for h in hits],
-            },
-            metadata={"status_code": resp.status_code},
-        )
+        observation.update(output={"hit_count": len(hits), "titles": [h.title for h in hits]})
         return hits

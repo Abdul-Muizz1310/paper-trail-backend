@@ -14,17 +14,23 @@ async def chat_json(messages: list[ChatMessage], schema: type[BaseModel], *, mod
 
 `ModelTier = Literal["primary", "fast", "fallback"]` resolves to the env-driven `OPENROUTER_MODEL_*` slugs.
 
-### Default slugs (2026-10-20)
+### Default slugs (2026-10-26)
 
 The env vars win; the code defaults apply only when a slot's variable is unset. Every default is a
-`:free` OpenRouter slug (verified live 2026-10-20) — never a paid model, so a deploy that forgets a
-variable cannot start spending money:
+`:free` OpenRouter slug, smoke-tested live with `response_format: json_object` — never a paid model,
+so a deploy that forgets a variable cannot start spending money. The three slots sit on three
+upstream providers (Google AI Studio, Phala, AtlasCloud), so one provider's outage cannot empty the
+cascade:
 
 | Slot | Env var | Default |
 |---|---|---|
 | primary | `OPENROUTER_MODEL_PRIMARY` | `google/gemma-4-26b-a4b-it:free` |
-| fast | `OPENROUTER_MODEL_FAST` | `minimax/minimax-m3.1-flash:free` |
-| fallback | `OPENROUTER_MODEL_FALLBACK` | `minimax/minimax-m3.1-flash:free` (was `google/gemma-4-31b-it:free` until 2026-10-21: it answered 502 live; the same slug as fast is fine, the cascade calls a model once) |
+| fast | `OPENROUTER_MODEL_FAST` | `xingchen-agi/xing4.0-29b-a4b:free` (3.6 s, valid JSON) |
+| fallback | `OPENROUTER_MODEL_FALLBACK` | `dots-studio/dots-3-note-preview:free` (a reasoning model: slower, the best verdict of the three tried) |
+
+History: `minimax/minimax-m3.1-flash:free` (fast and fallback since 2026-10-21) left OpenRouter on
+2026-10-26, and that morning's debate failed on its 404s; `google/gemma-4-31b-it:free` answered 502
+on 2026-10-21 and again on 2026-10-26, so it is not used.
 
 The previous defaults (`openai/gpt-4o-mini`, `anthropic/claude-3-haiku`) were paid models, and the
 slugs the README named (`google/gemini-2.0-flash-001`, `google/gemini-2.5-flash-lite`) are no longer

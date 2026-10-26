@@ -49,7 +49,7 @@ async def platform_debate(
     effective_max_rounds = min(requested, PLATFORM_MAX_ROUNDS_CAP)
 
     debate_id = await service.create(body.claim, effective_max_rounds)
-    await service.run(debate_id)
+    await service.run(debate_id, entry="platform")
     debate = await service.get(debate_id)
     if debate is None:
         raise HTTPException(status_code=500, detail="debate disappeared after run")
