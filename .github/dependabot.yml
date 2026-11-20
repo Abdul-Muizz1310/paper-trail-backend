@@ -25,5 +25,9 @@ updates:
     labels:
       - "dependencies"
     groups:
+      # Majors excluded: a single breaking bump in the group would block every
+      # benign one, and a group PR cannot be partially merged. Majors still
+      # arrive, one PR each.
       dev-dependencies:
         dependency-type: "development"
+        update-types: ["minor", "patch"]
