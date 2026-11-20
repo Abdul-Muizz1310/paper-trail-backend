@@ -2,7 +2,7 @@
 
 ## Goal
 
-A thin wrapper around `langchain-openai` pointed at OpenRouter that exposes `chat(messages, **kwargs)` and `chat_json(messages, schema)`. Implements primary-with-fallback on rate-limit / server errors, enforces JSON mode for structured outputs, and enforces a hard per-call timeout.
+A thin wrapper around raw `httpx` calls to OpenRouter's OpenAI-compatible `/chat/completions` endpoint that exposes `chat(messages, **kwargs)` and `chat_json(messages, schema)`. Implements primary-with-fallback on rate-limit / server errors, enforces JSON mode for structured outputs, and enforces a hard per-call timeout.
 
 ## Public API
 

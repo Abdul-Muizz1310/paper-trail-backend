@@ -14,8 +14,6 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.14",
     "langgraph>=1.2.10",
-    "langchain-core>=0.3.20",
-    "langchain-openai>=0.2.10",
     "sse-starlette>=2.2",
     "httpx>=0.27",
     "trafilatura>=1.12",
@@ -35,6 +33,10 @@ dependencies = [
 # surface). tenacity still ships, but transitively via langchain-core rather
 # than as our own direct dependency — the point is that nothing here claims a
 # capability the code does not use.
+# langchain-openai and langchain-core went the same way: core/llm.py calls
+# OpenRouter over raw httpx, and no file has ever imported either. Dropping
+# langchain-openai took the openai SDK and tiktoken out of the image;
+# langchain-core still ships, as langgraph's own dependency.
 # Re-add any of them in the same commit as its first real import.
 
 [project.optional-dependencies]
